@@ -1,0 +1,183 @@
+@import "tailwindcss";
+
+:root {
+  --background: #050507;
+  --foreground: #fafafa;
+  --accent: #c9a86a;
+  --accent-rgb: 201 168 106;
+  --charcoal: #0e0e11;
+}
+
+@theme inline {
+  --color-background: #050507;
+  --color-foreground: #fafafa;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-playfair), ui-serif, Georgia, serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+  color-scheme: dark;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: #050507;
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  z-index: -2;
+  background:
+    radial-gradient(circle at var(--glow-x, 22%) var(--glow-y, 18%), rgb(var(--accent-rgb) / 0.12), transparent 45rem),
+    radial-gradient(circle at 80% 72%, rgba(255, 255, 255, 0.015), transparent 30rem),
+    linear-gradient(180deg, #050507 0%, #0c0c0e 50%, #050507 100%);
+  animation: cinematic-drift 24s ease-in-out infinite alternate;
+}
+
+
+
+/* Typography Base Style */
+h1, h2, h3 {
+  color: #fafafa;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+p, span, li {
+  color: #a1a1aa; /* Zinc-400 */
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgb(var(--accent-rgb) / 0.35);
+}
+
+/* Slim Sliders styling */
+.mood-slider {
+  appearance: none;
+  height: 4px; /* Thin h-1 track */
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+  position: relative;
+}
+
+/* Chrome, Safari, Opera */
+.mood-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.mood-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* Firefox */
+.mood-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.mood-slider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+/* Premium Frosted Glass Material Utilities */
+.glass-card {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+}
+
+.glass-pill {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  border-radius: 9999px;
+}
+
+.glass-modal {
+  background: rgba(15, 15, 18, 0.85);
+  backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.skeleton-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  translate: -100% 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.08), transparent);
+  animation: skeleton-sweep 1.8s ease-in-out infinite;
+}
+
+@keyframes cinematic-drift {
+  0% {
+    --glow-x: 18%;
+    --glow-y: 14%;
+  }
+  100% {
+    --glow-x: 44%;
+    --glow-y: 26%;
+  }
+}
+
+@keyframes skeleton-sweep {
+  to {
+    translate: 100% 0;
+  }
+}
