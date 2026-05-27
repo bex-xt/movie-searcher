@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import type { Variants } from "framer-motion";
 import {
   ArrowLeft,
+  Bookmark,
   Brain,
   Check,
   Clapperboard,
@@ -20,6 +21,7 @@ import {
   Smile,
   Sparkles,
   Star,
+  Trash2,
   X,
   Zap,
 } from "lucide-react";
@@ -62,6 +64,16 @@ type Recommendation = {
     name: string;
     logo: string;
   }[];
+};
+
+type SavedMovie = {
+  id: number;
+  title: string;
+  year: string;
+  poster: string | null;
+  runtime: number | null;
+  reason: string;
+  trailerKey: string | null;
 };
 
 const moodColors: MoodColor[] = [
@@ -137,6 +149,19 @@ const cardVariants: Variants = {
   }),
 };
 
+function getVibeLabel(key: string, value: number): string {
+  const labels: Record<string, [string, string, string]> = {
+    pace: ["slow burn", "balanced pace", "fast-moving"],
+    tone: ["dark", "balanced tone", "comforting"],
+    complexity: ["easy watch", "moderate depth", "mind-bending"],
+    intensity: ["low-stakes", "moderate stakes", "heavy"],
+  };
+  const [low, mid, high] = labels[key] || ["low", "mid", "high"];
+  if (value < 35) return low;
+  if (value > 65) return high;
+  return mid;
+}
+
 export default function Home() {
   const [step, setStep] = useState(0);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
@@ -179,6 +204,57 @@ export default function Home() {
   const [activeTrailer, setActiveTrailer] = useState<Recommendation | null>(null);
   const [excludeIds, setExcludeIds] = useState<number[]>([]);
   const [contextualLoadingText, setContextualLoadingText] = useState("");
+
+  const [savedMovies, setSavedMovies] = useState<SavedMovie[]>([]);
+  const [showSavedPanel, setShowSavedPanel] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const stored = localStorage.getItem("netflix_de_syndrome_saved_movies");
+        if (stored) {
+          setSavedMovies(JSON.parse(stored));
+        }
+      } catch (e) {
+        console.error("Failed to load saved movies", e);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  function persistSavedMovies(movies: SavedMovie[]) {
+    setSavedMovies(movies);
+    try {
+      localStorage.setItem("netflix_de_syndrome_saved_movies", JSON.stringify(movies));
+    } catch (e) {
+      console.error("Failed to persist saved movies", e);
+    }
+  }
+
+  function isMovieSaved(movieId: number) {
+    return savedMovies.some((m) => m.id === movieId);
+  }
+
+  function toggleSaveMovie(movie: Recommendation) {
+    if (isMovieSaved(movie.id)) {
+      persistSavedMovies(savedMovies.filter((m) => m.id !== movie.id));
+    } else {
+      const compact: SavedMovie = {
+        id: movie.id,
+        title: movie.title,
+        year: movie.year,
+        poster: movie.poster,
+        runtime: movie.runtime,
+        reason: movie.reason,
+        trailerKey: movie.trailerKey,
+      };
+      persistSavedMovies([compact, ...savedMovies]);
+    }
+  }
+
+  function removeSavedMovie(movieId: number) {
+    persistSavedMovies(savedMovies.filter((m) => m.id !== movieId));
+  }
 
   const activeMood = useMemo(
     () => moodColors.find((color) => color.id === selectedColors[selectedColors.length - 1]) || moodColors[2],
@@ -368,8 +444,20 @@ export default function Home() {
   return (
     <main style={shellStyle} className="min-h-screen overflow-x-hidden text-white">
       <section className="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-4 py-8 sm:px-6 lg:px-8">
-        <header className="flex items-center py-4 mb-16 border-b border-white/[0.04]">
+        <header className="flex items-center justify-between py-4 mb-16 border-b border-white/[0.04]">
           <BrandAnimation />
+          <button
+            onClick={() => setShowSavedPanel(true)}
+            className="relative flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-4 py-2 text-xs font-medium text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-white/[0.06] hover:text-zinc-200"
+          >
+            <Bookmark size={14} className={savedMovies.length > 0 ? "text-[color:var(--accent)] fill-[color:var(--accent)]" : ""} />
+            Saved
+            {savedMovies.length > 0 && (
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[color:var(--accent)] text-[10px] font-bold text-black">
+                {savedMovies.length}
+              </span>
+            )}
+          </button>
         </header>
 
         <div className="flex-1 py-8 w-full">
@@ -531,12 +619,25 @@ export default function Home() {
 
               {step === 4 && recommendations.length > 0 && (
                 <motion.section key="results" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
-                  <div className="mb-8">
+                  <div className="mb-10">
                     <p className="mb-2 text-sm uppercase tracking-[0.28em] text-[color:var(--accent)]">The Rule of Five</p>
                     <h1 className="max-w-4xl font-serif text-4xl leading-[0.96] text-balance sm:text-6xl">Five choices. No spiral.</h1>
-                    <p className="mt-4 max-w-2xl text-white/58">
-                      Your mood says {selectedMoodTags.slice(0, 3).join(", ") || "cinematic"}.
+                    <p className="mt-4 max-w-2xl text-base leading-relaxed text-white/58">
+                      Based on your <span className="font-medium text-white/90">{selectedMoodTags.slice(0, 2).join(" + ") || "cinematic"}</span> mood, these five avoid endless scrolling.
                     </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {selectedMoodTags.slice(0, 4).map((tag) => (
+                        <span key={tag} className="rounded-full border border-[color:var(--accent)]/20 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-medium text-[color:var(--accent)]">
+                          {tag}
+                        </span>
+                      ))}
+                      <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                        {getVibeLabel("pace", sliders.pace)}
+                      </span>
+                      <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                        {getVibeLabel("tone", sliders.tone)}
+                      </span>
+                    </div>
                   </div>
                   
                   <AnimatePresence mode="wait">
@@ -576,6 +677,8 @@ export default function Home() {
                             movie={movie}
                             index={index}
                             onSelect={() => setActiveMovie(movie)}
+                            isSaved={isMovieSaved(movie.id)}
+                            onToggleSave={() => toggleSaveMovie(movie)}
                           />
                         ))}
                       </motion.div>
@@ -585,20 +688,20 @@ export default function Home() {
                   {!loading && (
                     <div className="mt-12 flex flex-col sm:flex-row justify-center items-center gap-4">
                       <button
-                        onClick={fetchMoreRecommendations}
-                        disabled={loadingMore}
-                        className="inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-6 py-3.5 text-sm font-medium text-white/80 transition hover:border-[color:var(--accent)]/50 hover:bg-white/[0.08] disabled:opacity-50"
+                        onClick={() => setStep(1)}
+                        className="inline-flex items-center gap-2.5 rounded-full bg-[color:var(--accent)] px-6 py-3.5 text-sm font-semibold text-black shadow-[0_0_24px_rgb(var(--accent-rgb)/0.2)] transition hover:scale-[1.02] active:scale-[0.98]"
                       >
-                        <Sparkles size={16} className={loadingMore ? "animate-spin text-[color:var(--accent)]" : "text-[color:var(--accent)]"} />
-                        {loadingMore ? "Curating a new batch..." : "Not feeling these? Show me 5 more."}
+                        <Sliders size={16} />
+                        Recalibrate
                       </button>
 
                       <button
-                        onClick={() => setStep(3)}
-                        className="inline-flex items-center gap-2.5 rounded-full border border-[color:var(--accent)]/20 bg-[color:var(--accent)]/5 px-6 py-3.5 text-sm font-medium text-[color:var(--accent)] transition hover:bg-[color:var(--accent)]/15 active:scale-[0.98]"
+                        onClick={fetchMoreRecommendations}
+                        disabled={loadingMore}
+                        className="inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-6 py-3.5 text-sm font-medium text-white/70 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white/90 disabled:opacity-50"
                       >
-                        <Sliders size={16} />
-                        Adjust vibe calibration
+                        <Sparkles size={16} className={loadingMore ? "animate-spin text-[color:var(--accent)]" : "text-white/40"} />
+                        {loadingMore ? "Curating a new batch..." : "Show me 5 more"}
                       </button>
                     </div>
                   )}
@@ -643,6 +746,29 @@ export default function Home() {
             onClose={() => setActiveMovie(null)}
             onWatchTrailer={(movie) => setActiveTrailer(movie)}
             onExploreMore={(movie) => exploreMoreLikeThis(movie)}
+            isSaved={isMovieSaved(activeMovie.id)}
+            onToggleSave={() => toggleSaveMovie(activeMovie)}
+            moodTags={selectedMoodTags}
+            vibeLabels={{
+              pace: getVibeLabel("pace", sliders.pace),
+              tone: getVibeLabel("tone", sliders.tone),
+              complexity: getVibeLabel("complexity", sliders.complexity),
+              intensity: getVibeLabel("intensity", sliders.intensity),
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSavedPanel && (
+          <SavedPicksPanel
+            savedMovies={savedMovies}
+            onClose={() => setShowSavedPanel(false)}
+            onRemove={removeSavedMovie}
+            onWatchTrailer={(trailerKey, title) => {
+              setShowSavedPanel(false);
+              setActiveTrailer({ trailerKey, title } as Recommendation);
+            }}
           />
         )}
       </AnimatePresence>
@@ -964,10 +1090,14 @@ function MovieCard({
   movie,
   index,
   onSelect,
+  isSaved,
+  onToggleSave,
 }: {
   movie: Recommendation;
   index: number;
   onSelect: () => void;
+  isSaved: boolean;
+  onToggleSave: () => void;
 }) {
   return (
     <motion.article
@@ -980,6 +1110,18 @@ function MovieCard({
       onClick={onSelect}
       className="group relative cursor-pointer overflow-hidden aspect-[2/3] flex flex-col justify-end glass-card hover:border-white/15 hover:scale-[1.02] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(var(--accent-rgb),0.12)]"
     >
+      {/* Save/Bookmark Button */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleSave(); }}
+        className={`absolute top-4 left-4 z-20 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-md transition-all duration-300 ${
+          isSaved
+            ? "bg-[color:var(--accent)]/90 text-black border border-[color:var(--accent)] shadow-[0_0_16px_rgb(var(--accent-rgb)/0.3)]"
+            : "bg-black/50 text-white/60 border border-white/10 opacity-0 group-hover:opacity-100 hover:bg-black/70 hover:text-white"
+        }`}
+        title={isSaved ? "Remove from saved" : "Save this pick"}
+      >
+        <Bookmark size={14} fill={isSaved ? "currentColor" : "none"} />
+      </button>
 
       {movie.poster ? (
         <img
@@ -1043,7 +1185,7 @@ function MovieCard({
           </p>
           
           <div className="mt-3 flex flex-wrap gap-1">
-            {movie.genres.slice(0, 2).map((tag) => (
+            {movie.genres.slice(0, 4).map((tag) => (
               <span key={tag} className="rounded-full bg-white/[0.03] px-2 py-0.5 text-[10px] text-zinc-300 border border-white/[0.04]">
                 {tag}
               </span>
@@ -1064,11 +1206,19 @@ function MovieDetailModal({
   onClose,
   onWatchTrailer,
   onExploreMore,
+  isSaved,
+  onToggleSave,
+  moodTags,
+  vibeLabels,
 }: {
   movie: Recommendation;
   onClose: () => void;
   onWatchTrailer: (movie: Recommendation) => void;
   onExploreMore: (movie: Recommendation) => void;
+  isSaved: boolean;
+  onToggleSave: () => void;
+  moodTags: string[];
+  vibeLabels: { pace: string; tone: string; complexity: string; intensity: string };
 }) {
   return (
     <motion.div
@@ -1133,6 +1283,18 @@ function MovieDetailModal({
               >
                 <Compass size={16} className="text-[color:var(--accent)]" />
                 Explore more like this
+              </button>
+
+              <button
+                onClick={onToggleSave}
+                className={`inline-flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-sm font-semibold transition hover:scale-[1.02] ${
+                  isSaved
+                    ? "border border-[color:var(--accent)] bg-[color:var(--accent)]/20 text-[color:var(--accent)]"
+                    : "border border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                }`}
+              >
+                <Bookmark size={16} fill={isSaved ? "currentColor" : "none"} />
+                {isSaved ? "Saved to picks" : "Save this pick"}
               </button>
 
               <div className="mt-4 rounded-[20px] border border-white/[0.04] bg-white/[0.02] p-4 text-left shadow-lg backdrop-blur-xl">
@@ -1249,11 +1411,149 @@ function MovieDetailModal({
               </div>
             )}
 
-            <div className="rounded-2xl bg-white/[0.01] border border-white/[0.04] p-5 text-xs leading-relaxed text-zinc-400">
-              <span className="font-semibold text-[color:var(--accent)] mr-1.5">Why this fits:</span>
-              {movie.reason}
+            <div className="rounded-2xl bg-white/[0.01] border border-white/[0.04] p-5">
+              <h4 className="text-xs uppercase tracking-widest text-zinc-500 mb-3 font-semibold">Why This Matched</h4>
+              <div className="flex flex-wrap gap-2 mb-4">
+                {moodTags.slice(0, 2).length > 0 && (
+                  <span className="rounded-full border border-[color:var(--accent)]/25 bg-[color:var(--accent)]/8 px-3 py-1 text-[11px] font-medium text-[color:var(--accent)]">
+                    Mood: {moodTags.slice(0, 2).join(" + ")}
+                  </span>
+                )}
+                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                  Pace: {vibeLabels.pace}
+                </span>
+                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                  Tone: {vibeLabels.tone}
+                </span>
+                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                  Complexity: {vibeLabels.complexity}
+                </span>
+                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                  Intensity: {vibeLabels.intensity}
+                </span>
+                {movie.rating > 0 && (
+                  <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-3 py-1 text-[11px] font-medium text-yellow-400/90 inline-flex items-center gap-1">
+                    <Star size={10} fill="currentColor" stroke="currentColor" />
+                    {movie.rating.toFixed(1)}{movie.votes > 0 ? ` (${movie.votes.toLocaleString()})` : ""}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs leading-relaxed text-zinc-400">{movie.reason}</p>
             </div>
           </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function SavedPicksPanel({
+  savedMovies,
+  onClose,
+  onRemove,
+  onWatchTrailer,
+}: {
+  savedMovies: SavedMovie[];
+  onClose: () => void;
+  onRemove: (id: number) => void;
+  onWatchTrailer: (trailerKey: string, title: string) => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 sm:p-6 backdrop-blur-3xl"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 60, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 60, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 120, damping: 20 }}
+        className="relative w-full max-w-2xl overflow-hidden rounded-[32px] glass-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#050507]/90 to-[#050507] pointer-events-none" />
+
+        <button
+          onClick={onClose}
+          className="absolute right-6 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.08] bg-[#050507]/40 text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-[#050507]/80 hover:text-zinc-100"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="relative z-10 p-6 sm:p-8 overflow-y-auto max-h-[85vh]">
+          <div className="mb-6">
+            <p className="mb-2 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-semibold">Your Picks</p>
+            <h2 className="font-serif text-3xl sm:text-4xl text-zinc-50 tracking-[-0.02em] font-semibold">Saved Movies</h2>
+            <p className="mt-2 text-sm text-zinc-400">
+              {savedMovies.length === 0
+                ? "No movies saved yet. Bookmark movies you love to find them here."
+                : `${savedMovies.length} movie${savedMovies.length === 1 ? "" : "s"} saved`}
+            </p>
+          </div>
+
+          {savedMovies.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-16 rounded-[24px] border border-dashed border-white/10 bg-white/[0.01]">
+              <Bookmark size={40} className="text-white/15 mb-4" />
+              <p className="text-sm text-zinc-500 max-w-xs">
+                Tap the bookmark icon on any movie card to save it for later.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {savedMovies.map((movie) => (
+                <motion.div
+                  key={movie.id}
+                  layout
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="group/saved flex gap-4 rounded-[20px] border border-white/[0.06] bg-white/[0.02] p-3 transition hover:border-white/[0.12] hover:bg-white/[0.04]"
+                >
+                  {movie.poster ? (
+                    <img
+                      src={movie.poster}
+                      alt={movie.title}
+                      className="h-28 w-20 shrink-0 rounded-xl object-cover border border-white/10"
+                    />
+                  ) : (
+                    <div className="h-28 w-20 shrink-0 rounded-xl bg-white/5 flex items-center justify-center text-zinc-500 text-xs border border-white/10">
+                      No Poster
+                    </div>
+                  )}
+
+                  <div className="flex-1 min-w-0 flex flex-col justify-between py-1">
+                    <div>
+                      <h3 className="font-serif text-lg font-semibold text-zinc-100 truncate">{movie.title}</h3>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        {movie.year}{movie.runtime ? ` \u2022 ${movie.runtime} min` : ""}
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-2 line-clamp-2 leading-relaxed">{movie.reason}</p>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      {movie.trailerKey && (
+                        <button
+                          onClick={() => onWatchTrailer(movie.trailerKey!, movie.title)}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/[0.12] hover:text-white border border-white/[0.06]"
+                        >
+                          <Play size={10} fill="currentColor" />
+                          Trailer
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onRemove(movie.id)}
+                        className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-zinc-500 transition hover:bg-red-950/40 hover:text-red-300 border border-white/[0.04] hover:border-red-400/20"
+                      >
+                        <Trash2 size={10} />
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </div>
       </motion.div>
     </motion.div>
