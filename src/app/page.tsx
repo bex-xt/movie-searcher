@@ -66,14 +66,8 @@ type Recommendation = {
   }[];
 };
 
-type SavedMovie = {
-  id: number;
-  title: string;
-  year: string;
-  poster: string | null;
-  runtime: number | null;
-  reason: string;
-  trailerKey: string | null;
+type SavedMovie = Recommendation & {
+  savedAt?: number;
 };
 
 const moodColors: MoodColor[] = [
@@ -162,6 +156,22 @@ function getVibeLabel(key: string, value: number): string {
   return mid;
 }
 
+function formatSavedAt(timestamp?: number): string {
+  if (!timestamp) return "Saved recently";
+  const diff = Date.now() - timestamp;
+  if (diff < 60000) return "Saved just now";
+  if (diff < 3600000) {
+    const mins = Math.floor(diff / 60000);
+    return `Saved ${mins} min${mins === 1 ? "" : "s"} ago`;
+  }
+  if (diff < 86400000) {
+    const hrs = Math.floor(diff / 3600000);
+    return `Saved ${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  }
+  const date = new Date(timestamp);
+  return `Saved on ${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
 export default function Home() {
   const [step, setStep] = useState(0);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
@@ -235,20 +245,18 @@ export default function Home() {
     return savedMovies.some((m) => m.id === movieId);
   }
 
+
+
   function toggleSaveMovie(movie: Recommendation) {
     if (isMovieSaved(movie.id)) {
       persistSavedMovies(savedMovies.filter((m) => m.id !== movie.id));
     } else {
-      const compact: SavedMovie = {
-        id: movie.id,
-        title: movie.title,
-        year: movie.year,
-        poster: movie.poster,
-        runtime: movie.runtime,
-        reason: movie.reason,
-        trailerKey: movie.trailerKey,
+      const saved: SavedMovie = {
+        ...movie,
+        // eslint-disable-next-line react-hooks/purity
+        savedAt: Date.now(),
       };
-      persistSavedMovies([compact, ...savedMovies]);
+      persistSavedMovies([saved, ...savedMovies]);
     }
   }
 
@@ -399,7 +407,7 @@ export default function Home() {
 
   async function exploreMoreLikeThis(seedMovie: Recommendation) {
     setActiveMovie(null);
-    const loadingText = `Finding more films that is similar to ${seedMovie.title}...`;
+    const loadingText = `Finding more films similar to ${seedMovie.title}...`;
     setContextualLoadingText(loadingText);
     setLoading(true);
     setError("");
@@ -768,6 +776,10 @@ export default function Home() {
             onWatchTrailer={(trailerKey, title) => {
               setShowSavedPanel(false);
               setActiveTrailer({ trailerKey, title } as Recommendation);
+            }}
+            onSelect={(movie) => {
+              setShowSavedPanel(false);
+              setActiveMovie(movie);
             }}
           />
         )}
@@ -1335,17 +1347,17 @@ function MovieDetailModal({
                 )}
                 <span className="text-white/20">{" \u2022 "}</span>
                 <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-0.5 text-xs text-zinc-300">
-                  {movie.matchScore}% Match
+                  {movie.matchScore ?? 90}% Match
                 </span>
-                {movie.rating > 0 && (
+                {(movie.rating ?? 0) > 0 && (
                   <>
                     <span className="text-white/20">{" \u2022 "}</span>
                     <span className="inline-flex items-center gap-1.5 text-zinc-300">
                       <Star size={14} fill="#eab308" stroke="#eab308" className="translate-y-[-1px]" />
-                      <span className="font-bold">{movie.rating.toFixed(1)}</span>
+                      <span className="font-bold">{(movie.rating ?? 0).toFixed(1)}</span>
                       <span className="text-white/40 text-xs">/10</span>
-                      {movie.votes > 0 && (
-                        <span className="text-xs text-white/40 ml-0.5">({movie.votes.toLocaleString()} votes)</span>
+                      {(movie.votes ?? 0) > 0 && (
+                        <span className="text-xs text-white/40 ml-0.5">({(movie.votes ?? 0).toLocaleString()} votes)</span>
                       )}
                     </span>
                   </>
@@ -1354,7 +1366,7 @@ function MovieDetailModal({
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {movie.genres.map((tag) => (
+              {(movie.genres || []).map((tag) => (
                 <span
                   key={tag}
                   className="rounded-full border border-white/[0.04] bg-white/[0.02] px-3.5 py-1 text-xs text-zinc-400"
@@ -1366,7 +1378,7 @@ function MovieDetailModal({
 
             <div>
               <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-2 font-medium">Synopsis</h3>
-              <p className="text-base leading-relaxed text-zinc-300 max-w-3xl font-light">{movie.overview}</p>
+              <p className="text-base leading-relaxed text-zinc-300 max-w-3xl font-light">{movie.overview || movie.reason || "No synopsis available."}</p>
             </div>
 
             <div className="grid gap-4 border-t border-white/10 pt-4 sm:grid-cols-2">
@@ -1388,7 +1400,7 @@ function MovieDetailModal({
               <div className="border-t border-white/10 pt-4">
                 <h4 className="text-xs uppercase tracking-widest text-zinc-500 mb-3 font-medium">Principal Cast</h4>
                 <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-none" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
-                  {movie.cast.map((actor) => (
+                  {(movie.cast || []).map((actor) => (
                     <div key={actor.id} className="flex min-w-[100px] max-w-[100px] flex-col gap-2 text-center group/actor">
                       {actor.profilePath ? (
                         <img
@@ -1431,10 +1443,10 @@ function MovieDetailModal({
                 <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
                   Intensity: {vibeLabels.intensity}
                 </span>
-                {movie.rating > 0 && (
+                {(movie.rating ?? 0) > 0 && (
                   <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-3 py-1 text-[11px] font-medium text-yellow-400/90 inline-flex items-center gap-1">
                     <Star size={10} fill="currentColor" stroke="currentColor" />
-                    {movie.rating.toFixed(1)}{movie.votes > 0 ? ` (${movie.votes.toLocaleString()})` : ""}
+                    {(movie.rating ?? 0).toFixed(1)}{(movie.votes ?? 0) > 0 ? ` (${(movie.votes ?? 0).toLocaleString()})` : ""}
                   </span>
                 )}
               </div>
@@ -1452,11 +1464,13 @@ function SavedPicksPanel({
   onClose,
   onRemove,
   onWatchTrailer,
+  onSelect,
 }: {
   savedMovies: SavedMovie[];
   onClose: () => void;
   onRemove: (id: number) => void;
   onWatchTrailer: (trailerKey: string, title: string) => void;
+  onSelect: (movie: SavedMovie) => void;
 }) {
   return (
     <motion.div
@@ -1509,7 +1523,8 @@ function SavedPicksPanel({
                   layout
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="group/saved flex gap-4 rounded-[20px] border border-white/[0.06] bg-white/[0.02] p-3 transition hover:border-white/[0.12] hover:bg-white/[0.04]"
+                  onClick={() => onSelect(movie)}
+                  className="group/saved flex gap-4 rounded-[20px] border border-white/[0.06] bg-white/[0.02] p-3 transition hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer"
                 >
                   {movie.poster ? (
                     <img
@@ -1525,16 +1540,24 @@ function SavedPicksPanel({
 
                   <div className="flex-1 min-w-0 flex flex-col justify-between py-1">
                     <div>
-                      <h3 className="font-serif text-lg font-semibold text-zinc-100 truncate">{movie.title}</h3>
-                      <p className="text-xs text-zinc-400 mt-0.5">
-                        {movie.year}{movie.runtime ? ` \u2022 ${movie.runtime} min` : ""}
+                      <h3 className="font-serif text-lg font-semibold text-zinc-100 truncate group-hover/saved:text-[color:var(--accent)] transition-colors duration-300">{movie.title}</h3>
+                      <p className="text-xs text-zinc-400 mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <span>{movie.year}</span>
+                        {movie.runtime ? <span>&bull; {movie.runtime} min</span> : null}
+                        <span>&bull;</span>
+                        <span className="text-[color:var(--accent)] font-medium">
+                          {formatSavedAt(movie.savedAt)}
+                        </span>
                       </p>
                       <p className="text-xs text-zinc-500 mt-2 line-clamp-2 leading-relaxed">{movie.reason}</p>
                     </div>
                     <div className="flex items-center gap-2 mt-2">
                       {movie.trailerKey && (
                         <button
-                          onClick={() => onWatchTrailer(movie.trailerKey!, movie.title)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onWatchTrailer(movie.trailerKey!, movie.title);
+                          }}
                           className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/[0.12] hover:text-white border border-white/[0.06]"
                         >
                           <Play size={10} fill="currentColor" />
@@ -1542,7 +1565,10 @@ function SavedPicksPanel({
                         </button>
                       )}
                       <button
-                        onClick={() => onRemove(movie.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemove(movie.id);
+                        }}
                         className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-zinc-500 transition hover:bg-red-950/40 hover:text-red-300 border border-white/[0.04] hover:border-red-400/20"
                       >
                         <Trash2 size={10} />

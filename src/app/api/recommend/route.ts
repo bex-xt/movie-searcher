@@ -284,15 +284,26 @@ async function buildDiscoverParamsRelaxed(
   const defaultSortBy = isModern ? "vote_count.desc" : "vote_average.desc";
   const sortBy = mapping.forceSortBy || defaultSortBy;
 
+  const intensity = input.sliders?.intensity ?? 50;
+  let withoutGenres = "16"; // PHASE 1: IRONCLAD PURE CINEMA RULE (No Animation)
+  if (intensity <= 35) {
+    withoutGenres += "|27|53"; // Low intensity: Exclude Horror (27) and Thriller (53)
+  }
+
+  let minVoteCount = "150";
+  if (intensity >= 65 && relaxationLevel === 0) {
+    minVoteCount = "250"; // High intensity: Focus on more widely reviewed/established movies initially
+  }
+
   const params = new URLSearchParams({
     include_adult: "false",
     include_video: "false",
     language: "en-US",
     page: "1",
     sort_by: sortBy,
-    "vote_count.gte": "150",
+    "vote_count.gte": minVoteCount,
     "vote_average.gte": "6.5",
-    without_genres: "16", // PHASE 1: IRONCLAD PURE CINEMA RULE (No Animation)
+    without_genres: withoutGenres,
     without_keywords: "210024|6513|297442", // Exclude anime, cartoon, animation keywords
   });
 
@@ -326,16 +337,125 @@ async function buildDiscoverParamsRelaxed(
 }
 
 async function getSliderMappings(input: MoodInput) {
-  const tone = input.sliders?.tone ?? 50;
+  let tone = input.sliders?.tone ?? 50;
   const pace = input.sliders?.pace ?? 50;
-  const complexity = input.sliders?.complexity ?? 50;
+  let complexity = input.sliders?.complexity ?? 50;
+  let intensity = input.sliders?.intensity ?? 50;
 
   const genres = new Set<number>();
   const keywordSearchTerms: string[] = [];
   const keywordIds = new Set<number>();
   let forceSortBy: string | null = null;
 
-  // 1. Tone Mapping
+  const direction = input.direction ?? "reflect";
+
+  // Compact color-to-genre and color-to-keyword mapping for REFLECT mode
+  const colorGenreMap: Record<string, number[]> = {
+    "deep-blue": [18, 9648], // Drama, Mystery
+    "muted-green": [18, 12], // Drama, Adventure
+    "warm-amber": [35, 10749], // Comedy, Romance
+    "red": [28, 53], // Action, Thriller
+    "violet": [878, 14, 9648], // Sci-Fi, Fantasy, Mystery
+    "gray": [18, 80], // Drama, Crime
+    "pale-yellow": [35, 10751], // Comedy, Family
+    "charcoal": [53, 80, 27], // Thriller, Crime, Horror
+    "rose": [10749, 18], // Romance, Drama
+    "teal": [9648, 878], // Mystery, Sci-Fi
+  };
+
+  const colorKeywordMap: Record<string, string[]> = {
+    "deep-blue": ["reflective", "melancholy"],
+    "muted-green": ["quiet", "healing"],
+    "warm-amber": ["cozy", "nostalgia"],
+    "red": ["intense", "thrilling"],
+    "violet": ["surreal", "mysterious"],
+    "gray": ["serious", "bleak"],
+    "pale-yellow": ["cheerful", "uplifting"],
+    "charcoal": ["dark", "brooding"],
+    "rose": ["tender", "romantic"],
+    "teal": ["atmospheric", "moody"],
+  };
+
+  // Compact color-to-genre and color-to-keyword mapping for SHIFT mode
+  const shiftedColorGenreMap: Record<string, number[]> = {
+    "charcoal": [35, 12, 10749],
+    "red": [35, 12, 10749],
+    "pale-yellow": [18, 9648],
+    "warm-amber": [18, 9648],
+    "rose": [18, 9648],
+    "deep-blue": [12, 35, 10749],
+    "gray": [12, 35, 10749],
+    "teal": [12, 35, 10749],
+    "muted-green": [12, 35, 10749],
+    "violet": [12, 35, 10749],
+  };
+
+  const shiftedColorKeywordMap: Record<string, string[]> = {
+    "charcoal": ["feel-good", "lighthearted", "optimistic", "heartwarming"],
+    "red": ["feel-good", "lighthearted", "optimistic", "heartwarming"],
+    "pale-yellow": ["philosophical", "thought-provoking", "cerebral", "complex"],
+    "warm-amber": ["philosophical", "thought-provoking", "cerebral", "complex"],
+    "rose": ["philosophical", "thought-provoking", "cerebral", "complex"],
+    "deep-blue": ["hopeful", "uplifting", "heartwarming", "inspiring"],
+    "gray": ["hopeful", "uplifting", "heartwarming", "inspiring"],
+    "teal": ["hopeful", "uplifting", "heartwarming", "inspiring"],
+    "muted-green": ["hopeful", "uplifting", "heartwarming", "inspiring"],
+    "violet": ["hopeful", "uplifting", "heartwarming", "inspiring"],
+  };
+
+  // 1. Shift the slider values first if direction === "shift"
+  if (direction === "shift") {
+    const colorIds = input.selectedColors?.map((c) => c.id) || [];
+    const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
+    const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
+    const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
+
+    if (hasDark) {
+      // Soften tone, decrease intensity
+      tone = Math.min(100, tone + 30);
+      intensity = Math.max(0, intensity - 25);
+    }
+    if (hasLight) {
+      // Add complexity/drama, slightly darken tone
+      complexity = Math.min(100, complexity + 30);
+      tone = Math.max(0, tone - 20);
+    }
+    if (hasBlueGray) {
+      // Add hope/warmth/adventure
+      tone = Math.min(100, tone + 25);
+      intensity = Math.min(100, intensity + 15);
+    }
+  }
+
+  // 2. Apply color influence
+  if (input.selectedColors && Array.isArray(input.selectedColors)) {
+    const activeGenreMap = direction === "shift" ? shiftedColorGenreMap : colorGenreMap;
+    const activeKeywordMap = direction === "shift" ? shiftedColorKeywordMap : colorKeywordMap;
+
+    for (const color of input.selectedColors) {
+      if (color && color.id) {
+        const mappedGenres = activeGenreMap[color.id] || [];
+        mappedGenres.forEach((g) => genres.add(g));
+
+        const mappedKeywords = activeKeywordMap[color.id] || [];
+        mappedKeywords.forEach((kw) => keywordSearchTerms.push(kw));
+      }
+    }
+  }
+
+  // 3. Apply Intensity influence on dynamic search pool (utilizing potentially shifted intensity)
+  if (intensity <= 35) {
+    genres.add(35); // Comedy
+    genres.add(10751); // Family
+    keywordSearchTerms.push("comforting", "low stakes", "feel-good");
+  } else if (intensity >= 65) {
+    genres.add(28); // Action
+    genres.add(53); // Thriller
+    genres.add(80); // Crime
+    keywordSearchTerms.push("suspense", "intense", "thrilling", "dark");
+  }
+
+  // 4. Tone Mapping
   if (tone <= 30) {
     genres.add(27); // Horror
     genres.add(53); // Thriller
@@ -353,7 +473,7 @@ async function getSliderMappings(input: MoodInput) {
     [1115, 1931, 33637].forEach((id) => keywordIds.add(id)); // feel good, heartwarming, uplifting
   }
 
-  // 2. Pace Mapping
+  // 5. Pace Mapping
   if (pace <= 40) {
     keywordSearchTerms.push("slow cinema", "contemplative", "art house");
     forceSortBy = "vote_average.desc";
@@ -363,7 +483,7 @@ async function getSliderMappings(input: MoodInput) {
     forceSortBy = "popularity.desc";
   }
 
-  // 3. Complexity Mapping
+  // 6. Complexity Mapping
   if (complexity <= 40) {
     genres.add(35); // Comedy
     genres.add(10749); // Romance
@@ -555,35 +675,119 @@ function scoreMovie(movie: TmdbMovie, input: MoodInput) {
   const vote = movie.vote_average || 6.5;
   const popularity = Math.min(movie.popularity || 20, 260);
   const base = 62 + (vote - 5.8) * 6 + popularity / 22;
-  const tone = input.sliders?.tone ?? 50;
+  let tone = input.sliders?.tone ?? 50;
   const pace = input.sliders?.pace ?? 50;
+  let complexity = input.sliders?.complexity ?? 50;
+  let intensity = input.sliders?.intensity ?? 50;
+
+  const direction = input.direction ?? "reflect";
+
+  if (direction === "shift") {
+    const colorIds = input.selectedColors?.map((c) => c.id) || [];
+    const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
+    const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
+    const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
+
+    if (hasDark) {
+      tone = Math.min(100, tone + 30);
+      intensity = Math.max(0, intensity - 25);
+    }
+    if (hasLight) {
+      complexity = Math.min(100, complexity + 30);
+      tone = Math.max(0, tone - 20);
+    }
+    if (hasBlueGray) {
+      tone = Math.min(100, tone + 25);
+      intensity = Math.min(100, intensity + 15);
+    }
+  }
+
   const toneBoost = tone > 55 && movie.genre_ids?.some((id) => [35, 12, 16, 10751].includes(id)) ? 5 : 0;
   const darkBoost = tone < 46 && movie.genre_ids?.some((id) => [53, 80, 9648, 18].includes(id)) ? 5 : 0;
   const paceBoost = pace > 55 && movie.genre_ids?.some((id) => [28, 53, 12].includes(id)) ? 4 : 0;
+  const complexityBoost = complexity > 55 && movie.genre_ids?.some((id) => [878, 9648].includes(id)) ? 4 : 0;
 
-  return Math.max(76, Math.min(97, Math.round(base + toneBoost + darkBoost + paceBoost)));
+  let intensityBoost = 0;
+  if (intensity <= 35) {
+    // Low intensity: Penalize heavy/intense genres, boost light/family/romance
+    if (movie.genre_ids?.some((id) => [27, 53, 80, 28].includes(id))) {
+      intensityBoost = -8;
+    } else if (movie.genre_ids?.some((id) => [35, 10751, 10749].includes(id))) {
+      intensityBoost = 6;
+    }
+  } else if (intensity >= 65) {
+    // High intensity: Boost heavy/action/suspense genres
+    if (movie.genre_ids?.some((id) => [27, 53, 80, 28].includes(id))) {
+      intensityBoost = 6;
+    } else if (movie.genre_ids?.some((id) => [35, 10751].includes(id))) {
+      intensityBoost = -4; // slightly penalize very light family/comedy
+    }
+  }
+
+  return Math.max(76, Math.min(97, Math.round(base + toneBoost + darkBoost + paceBoost + intensityBoost + complexityBoost)));
 }
 
 function reasonFor(input: MoodInput, genres: string[], wildcard: boolean) {
   const tags = tagsFor(input);
-  const direction = input.direction === "shift" ? "shift from your current mood" : "reflect your current mood";
-  const pace = (input.sliders?.pace ?? 50) > 58 ? "faster pacing" : "a patient rhythm";
-  const tone = (input.sliders?.tone ?? 50) > 58 ? "a lighter emotional landing" : "a darker emotional edge";
-  const complexity = (input.sliders?.complexity ?? 50) > 58 ? "room to think" : "an easy path into the story";
+  const direction = input.direction ?? "reflect";
+
+  let tone = input.sliders?.tone ?? 50;
+  const pace = input.sliders?.pace ?? 50;
+  let complexity = input.sliders?.complexity ?? 50;
+
+  if (direction === "shift") {
+    const colorIds = input.selectedColors?.map((c) => c.id) || [];
+    const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
+    const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
+    const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
+
+    if (hasDark) {
+      tone = Math.min(100, tone + 30);
+    }
+    if (hasLight) {
+      complexity = Math.min(100, complexity + 30);
+      tone = Math.max(0, tone - 20);
+    }
+    if (hasBlueGray) {
+      tone = Math.min(100, tone + 25);
+    }
+  }
+
+  const paceText = pace > 58 ? "faster pacing" : "a patient rhythm";
+  const toneText = tone > 58 ? "a lighter emotional landing" : "a darker emotional edge";
+  const complexityText = complexity > 58 ? "room to think" : "an easy path into the story";
 
   if (wildcard) {
     return `This is your wildcard: a less obvious TMDB match for ${tags[0] || "your mood"}, chosen to interrupt the scroll without breaking the vibe.`;
   }
 
+  if (direction === "shift") {
+    const colorIds = input.selectedColors?.map((c) => c.id) || [];
+    const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
+    const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
+    const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
+
+    if (hasDark) {
+      return `Chosen to shift from your mood toward a lighter emotional landing, softening the dark tone with comedy, romance, or adventure.`;
+    }
+    if (hasLight) {
+      return `Chosen to shift from your mood toward deeper dramatic complexity, adding thought-provoking depth to your warm outlook.`;
+    }
+    if (hasBlueGray) {
+      return `Chosen to shift from your mood toward hope, adventure, or warmth, lifting the quiet or reflective tone.`;
+    }
+    return `Recommended to gently shift your vibe, balancing a transition in pace with a fresh emotional outlook.`;
+  }
+
   if (genres.some((genre) => ["Comedy", "Animation", "Family", "Adventure"].includes(genre))) {
-    return `Chosen to ${direction} with ${tone}, ${pace}, and enough warmth to make the choice feel low-friction.`;
+    return `Chosen to reflect your current mood with ${toneText}, ${paceText}, and enough warmth to make the choice feel low-friction.`;
   }
 
   if (genres.some((genre) => ["Mystery", "Thriller", "Science Fiction", "Sci-Fi"].includes(genre))) {
-    return `Recommended because your profile leans ${tags.slice(0, 2).join(" and ") || "atmospheric"}, with ${complexity} and controlled tension.`;
+    return `Recommended because your profile leans ${tags.slice(0, 2).join(" and ") || "atmospheric"}, with ${complexityText} and controlled tension.`;
   }
 
-  return `This fits your ${tags.slice(0, 2).join(" and ") || "emotional"} mood, balancing ${pace} with ${complexity}.`;
+  return `This fits your ${tags.slice(0, 2).join(" and ") || "emotional"} mood, balancing ${paceText} with ${complexityText}.`;
 }
 
 function buildVibeTags(genres: string[], input: MoodInput) {
