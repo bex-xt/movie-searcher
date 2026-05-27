@@ -13,13 +13,62 @@ type MoodInput = {
     intensity?: number;
   };
   craving?: string;
-  filters?: {
-    releaseMix?: "balanced" | "newer" | "classics";
-    runtime?: "under90" | "any" | "epic";
-    language?: "any" | "english" | "international";
-    ratingComfort?: "safe" | "open";
-  };
 };
+
+interface TmdbMovieDetail {
+  id: number;
+  title: string;
+  genres?: { id: number; name: string }[];
+  release_date?: string;
+  runtime?: number | null;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  vote_average?: number;
+  vote_count?: number;
+  overview?: string;
+}
+
+interface TmdbCrewMember {
+  id: number;
+  name: string;
+  job: string;
+}
+
+interface TmdbCastMember {
+  id: number;
+  name: string;
+  character: string;
+  profile_path?: string | null;
+}
+
+interface TmdbCredits {
+  cast: TmdbCastMember[];
+  crew: TmdbCrewMember[];
+}
+
+interface TmdbKeyword {
+  id: number;
+  name: string;
+}
+
+interface TmdbKeywordsList {
+  keywords?: TmdbKeyword[];
+}
+
+interface TmdbWatchProvider {
+  provider_name: string;
+  logo_path: string;
+}
+
+interface TmdbWatchProvidersResults {
+  results?: {
+    US?: {
+      flatrate?: TmdbWatchProvider[];
+      rent?: TmdbWatchProvider[];
+      buy?: TmdbWatchProvider[];
+    };
+  };
+}
 
 type TmdbMovie = {
   id: number;
@@ -90,34 +139,40 @@ const genreNames: Record<number, string> = {
   10751: "Family",
 };
 
-const colorGenreMap: Record<string, number[]> = {
-  "deep-blue": [18, 9648],
-  "muted-green": [18, 12],
-  "warm-amber": [35, 10749, 36],
-  red: [28, 53],
-  violet: [878, 14, 9648],
-  gray: [18, 80],
-  "pale-yellow": [35, 10751],
-  charcoal: [53, 80, 27],
-  rose: [10749, 18],
-  teal: [9648, 878, 53],
-};
-
-const toneKeywordMap = {
-  dark: ["dark", "dystopia", "cynical"],
-  light: ["hopeful", "uplifting", "feel-good"],
-};
-
 const imageBase = "https://image.tmdb.org/t/p/w500";
 
 export async function POST(request: Request) {
+  let input: MoodInput & {
+    exclude_ids?: number[];
+    excludeIds?: number[];
+    seed_movie_id?: number;
+    seedMovieId?: number;
+  };
+
   try {
-    const input = (await request.json()) as MoodInput & {
-      exclude_ids?: number[];
-      excludeIds?: number[];
-      seed_movie_id?: number;
-      seedMovieId?: number;
-    };
+    input = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON payload provided." }, { status: 400 });
+  }
+
+  // 1. Validate selectedColors
+  if (!input.selectedColors || !Array.isArray(input.selectedColors) || input.selectedColors.length < 2) {
+    return NextResponse.json({ error: "Please select at least two mood colors to generate recommendations." }, { status: 400 });
+  }
+
+  // 2. Validate sliders if present
+  if (input.sliders) {
+    const { pace, tone, complexity, intensity } = input.sliders;
+    for (const [key, val] of Object.entries({ pace, tone, complexity, intensity })) {
+      if (val !== undefined) {
+        if (typeof val !== "number" || val < 0 || val > 100 || Number.isNaN(val)) {
+          return NextResponse.json({ error: `Slider '${key}' must be a valid number between 0 and 100.` }, { status: 400 });
+        }
+      }
+    }
+  }
+
+  try {
     const excludeIds = input.exclude_ids || input.excludeIds || [];
     const seedMovieId = input.seed_movie_id || input.seedMovieId || null;
 
@@ -125,7 +180,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ recommendations });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown recommendation error.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -143,14 +198,14 @@ async function buildRecommendations(
   if (seedMovieId) {
     try {
       const [movieDetail, movieCredits, movieKeywords] = await Promise.all([
-        tmdb<any>(`/movie/${seedMovieId}?language=en-US`),
-        tmdb<any>(`/movie/${seedMovieId}/credits?language=en-US`).catch(() => ({ crew: [] })),
-        tmdb<any>(`/movie/${seedMovieId}/keywords?language=en-US`).catch(() => ({ keywords: [] })),
+        tmdb<TmdbMovieDetail>(`/movie/${seedMovieId}?language=en-US`),
+        tmdb<TmdbCredits>(`/movie/${seedMovieId}/credits?language=en-US`).catch(() => ({ cast: [], crew: [] })),
+        tmdb<TmdbKeywordsList>(`/movie/${seedMovieId}/keywords?language=en-US`).catch(() => ({ keywords: [] })),
       ]);
 
-      directorId = movieCredits.crew?.find((person: any) => person.job === "Director")?.id || null;
-      seedGenreIds = movieDetail.genres?.map((g: any) => g.id) || [];
-      seedKeywordIds = movieKeywords.keywords?.slice(0, 3).map((k: any) => k.id) || [];
+      directorId = movieCredits.crew?.find((person) => person.job === "Director")?.id || null;
+      seedGenreIds = movieDetail.genres?.map((g) => g.id) || [];
+      seedKeywordIds = movieKeywords.keywords?.slice(0, 3).map((k) => k.id) || [];
     } catch (error) {
       console.error("Error fetching seed movie details:", error);
     }
@@ -256,8 +311,8 @@ async function buildDiscoverParamsRelaxed(
       params.set("with_genres", genreIds.join("|"));
     }
   } else {
-    let genreIds = mapping.genreIds;
-    let keywordIds = mapping.keywordIds;
+    const genreIds = mapping.genreIds;
+    const keywordIds = mapping.keywordIds;
 
     if (relaxationLevel < 3 && genreIds.length > 0) {
       params.set("with_genres", genreIds.join("|"));
@@ -266,11 +321,6 @@ async function buildDiscoverParamsRelaxed(
       params.set("with_keywords", keywordIds.join("|"));
     }
   }
-
-  if (input.filters?.language === "english") params.set("with_original_language", "en");
-  if (input.filters?.language === "international") params.set("without_original_language", "en");
-  if (input.filters?.runtime === "under90") params.set("with_runtime.lte", "90");
-  if (input.filters?.runtime === "epic") params.set("with_runtime.gte", "150");
 
   return params;
 }
@@ -391,6 +441,7 @@ async function discoverPool(
     }
   } catch (error) {
     console.error(`Error discovering ${label} movies:`, error);
+    throw error;
   }
 
   return allResults.filter(uniqueById);
@@ -398,12 +449,12 @@ async function discoverPool(
 
 async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: boolean): Promise<Recommendation> {
   const [detail, videos, credits, watchData] = await Promise.all([
-    tmdb<TmdbMovie>(`/movie/${movie.id}?language=en-US`),
+    tmdb<TmdbMovieDetail>(`/movie/${movie.id}?language=en-US`),
     tmdb<TmdbList<{ key: string; site: string; type: string; official?: boolean; name: string }>>(
       `/movie/${movie.id}/videos?language=en-US`,
     ),
-    tmdb<{ cast: any[]; crew: any[] }>(`/movie/${movie.id}/credits?language=en-US`).catch(() => ({ cast: [], crew: [] })),
-    tmdb<any>(`/movie/${movie.id}/watch/providers`).catch(() => ({ results: {} })),
+    tmdb<TmdbCredits>(`/movie/${movie.id}/credits?language=en-US`).catch(() => ({ cast: [], crew: [] })),
+    tmdb<TmdbWatchProvidersResults>(`/movie/${movie.id}/watch/providers`).catch(() => ({} as TmdbWatchProvidersResults)),
   ]);
 
   const trailer =
@@ -420,7 +471,7 @@ async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: bo
 
   const cast = (credits.cast || [])
     .slice(0, 8)
-    .map((c: any) => ({
+    .map((c) => ({
       id: c.id,
       name: c.name,
       character: c.character,
@@ -433,7 +484,7 @@ async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: bo
   // Parse watch providers for the US region, prioritizing flatrate (subscription), fallback to rent, then buy.
   const usWatch = watchData?.results?.US || {};
   const providerList = usWatch.flatrate || usWatch.rent || usWatch.buy || [];
-  const providers = providerList.slice(0, 3).map((p: any) => ({
+  const providers = providerList.slice(0, 3).map((p) => ({
     name: p.provider_name,
     logo: `https://image.tmdb.org/t/p/w92${p.logo_path}`,
   }));
@@ -460,12 +511,7 @@ async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: bo
   };
 }
 
-async function keywordsForTone(input: MoodInput) {
-  const tone = input.sliders?.tone ?? 50;
-  const keywords = tone <= 45 ? toneKeywordMap.dark : tone >= 55 ? toneKeywordMap.light : [];
-  const results = await Promise.all(keywords.map((keyword) => keywordId(keyword)));
-  return results.filter((id): id is number => typeof id === "number");
-}
+// Removed unused keywordsForTone function to keep codebase compact.
 
 async function keywordId(keyword: string) {
   const data = await tmdb<TmdbList<{ id: number; name: string }>>(`/search/keyword?query=${encodeURIComponent(keyword)}&page=1`);
@@ -503,38 +549,7 @@ function assertTmdbCredentials() {
   }
 }
 
-function genresForMood(input: MoodInput) {
-  const ids = new Set<number>();
-
-  for (const color of input.selectedColors || []) {
-    (colorGenreMap[color.id] || []).forEach((id) => ids.add(id));
-  }
-
-  if (ids.size === 0) {
-    throw new Error("No supported color/vibe mapping was provided. Select mapped vibe colors before requesting recommendations.");
-  }
-
-  return Array.from(ids);
-}
-
-function scoreAndPick(movies: TmdbMovie[], input: MoodInput, count: number) {
-  return movies
-    .filter(uniqueById)
-    .sort((a, b) => scoreMovie(b, input) - scoreMovie(a, input))
-    .slice(0, count);
-}
-
-function interleave<T>(first: T[], second: T[]) {
-  const mixed: T[] = [];
-  const length = Math.max(first.length, second.length);
-
-  for (let index = 0; index < length; index += 1) {
-    if (first[index]) mixed.push(first[index]);
-    if (second[index]) mixed.push(second[index]);
-  }
-
-  return mixed;
-}
+// Removed unused genresForMood, scoreAndPick, and interleave functions to keep codebase compact.
 
 function scoreMovie(movie: TmdbMovie, input: MoodInput) {
   const vote = movie.vote_average || 6.5;

@@ -5,35 +5,28 @@
 import { AnimatePresence, motion } from "framer-motion";
 import type { Variants } from "framer-motion";
 import {
+  ArrowLeft,
   Brain,
   Check,
   Clapperboard,
-  Clock3,
   Compass,
   Eye,
   Film,
   Laugh,
   Play,
-  Plus,
-  RotateCcw,
   Scale,
-  Search,
   Skull,
+  Sliders,
   Smile,
   Sparkles,
   Star,
-  Timer,
-  Trash2,
   X,
   Zap,
 } from "lucide-react";
 import type { CSSProperties } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Direction = "reflect" | "shift";
-type ReleaseMix = "balanced" | "newer" | "classics";
-type RuntimePreference = "under90" | "any" | "epic";
-type RatingComfort = "safe" | "open";
 
 type MoodColor = {
   id: string;
@@ -85,10 +78,10 @@ const moodColors: MoodColor[] = [
 ];
 
 const sliderCopy = {
-  pace: ["Slow / Art-House", "Fast / Adrenaline"],
-  tone: ["Ruthless / Gore", "Soft / Feel-Good"],
-  complexity: ["Simple / Comforting", "Mind-Bending / Surreal"],
-  intensity: ["Soft / Low-stakes", "Heavy / Intense"],
+  pace: ["Slow / Art-House", "Fast / Adrenaline", "slow burn vs fast-moving"],
+  tone: ["Ruthless / Gore", "Soft / Feel-Good", "dark vs comforting"],
+  complexity: ["Simple / Comforting", "Mind-Bending / Surreal", "easy watch vs mind-bending"],
+  intensity: ["Soft / Low-stakes", "Heavy / Intense", "low-stakes vs heavy"],
 };
 
 const presets = [
@@ -149,10 +142,34 @@ export default function Home() {
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [direction, setDirection] = useState<Direction>("reflect");
   const [sliders, setSliders] = useState({ pace: 45, tone: 58, complexity: 48, intensity: 42 });
-  const [releaseMix, setReleaseMix] = useState<ReleaseMix>("balanced");
-  const [runtime, setRuntime] = useState<RuntimePreference>("any");
-  const [language, setLanguage] = useState("any");
-  const [ratingComfort, setRatingComfort] = useState<RatingComfort>("safe");
+
+  const [lastVibe, setLastVibe] = useState<{
+    selectedColors: string[];
+    direction: Direction;
+    sliders: { pace: number; tone: number; complexity: number; intensity: number };
+  } | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const saved = localStorage.getItem("netflix_de_syndrome_last_vibe");
+        if (saved) {
+          setLastVibe(JSON.parse(saved));
+        }
+      } catch (e) {
+        console.error("Failed to load last vibe", e);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  function restoreLastVibe() {
+    if (!lastVibe) return;
+    setSelectedColors(lastVibe.selectedColors);
+    setDirection(lastVibe.direction);
+    setSliders(lastVibe.sliders);
+    setStep(3);
+  }
 
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -194,9 +211,23 @@ export default function Home() {
     });
   }
 
+  function toUserFriendlyError(err: unknown): string {
+    if (err instanceof Error) {
+      const msg = err.message.toLowerCase();
+      if (msg.includes("credentials") || msg.includes("tmdb") || msg.includes("api_key") || msg.includes("token")) {
+        return "Connection to our movie service is temporarily unavailable. Please verify server configuration settings and try again.";
+      }
+      if (msg.includes("failed to fetch") || msg.includes("network") || msg.includes("timeout")) {
+        return "Network connection issues detected. Please check your internet connection and try again.";
+      }
+      return err.message;
+    }
+    return "We encountered an unexpected glitch while curating your movies. Please try again.";
+  }
+
   async function getRecommendations() {
     if (selectedColors.length < 2) {
-      setError("Pick two colors before generating your five.");
+      setError("Please select at least two mood colors to calibrate your vibe.");
       return;
     }
 
@@ -212,8 +243,12 @@ export default function Home() {
         body: JSON.stringify({
           selectedColors: selectedColors.map((id) => moodColors.find((color) => color.id === id)),
           direction,
-          sliders,
-          filters: { releaseMix, runtime, language, ratingComfort },
+          sliders: {
+            pace: Math.min(100, Math.max(0, sliders.pace)),
+            tone: Math.min(100, Math.max(0, sliders.tone)),
+            complexity: Math.min(100, Math.max(0, sliders.complexity)),
+            intensity: Math.min(100, Math.max(0, sliders.intensity)),
+          },
           exclude_ids: [],
         }),
       });
@@ -225,8 +260,22 @@ export default function Home() {
       setRecommendations(recs);
       setExcludeIds(recs.map((m) => m.id));
       setStep(4);
+
+      try {
+        localStorage.setItem(
+          "netflix_de_syndrome_last_vibe",
+          JSON.stringify({
+            selectedColors,
+            direction,
+            sliders,
+          })
+        );
+        setLastVibe({ selectedColors, direction, sliders });
+      } catch (e) {
+        console.error("Failed to save vibe to localStorage", e);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The recommendation engine returned an unknown error.");
+      setError(toUserFriendlyError(caught));
     } finally {
       setLoading(false);
     }
@@ -245,8 +294,12 @@ export default function Home() {
         body: JSON.stringify({
           selectedColors: selectedColors.map((id) => moodColors.find((color) => color.id === id)),
           direction,
-          sliders,
-          filters: { releaseMix, runtime, language, ratingComfort },
+          sliders: {
+            pace: Math.min(100, Math.max(0, sliders.pace)),
+            tone: Math.min(100, Math.max(0, sliders.tone)),
+            complexity: Math.min(100, Math.max(0, sliders.complexity)),
+            intensity: Math.min(100, Math.max(0, sliders.intensity)),
+          },
           exclude_ids: excludeIds,
         }),
       });
@@ -262,7 +315,7 @@ export default function Home() {
         setExcludeIds((prev) => [...prev, ...recs.map((m) => m.id)]);
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load more movies.");
+      setError(toUserFriendlyError(caught));
     } finally {
       setLoadingMore(false);
     }
@@ -270,9 +323,7 @@ export default function Home() {
 
   async function exploreMoreLikeThis(seedMovie: Recommendation) {
     setActiveMovie(null);
-    const loadingText = seedMovie.director
-      ? `Finding films by ${seedMovie.director}...`
-      : `Matching the vibe of ${seedMovie.title}...`;
+    const loadingText = `Finding more films that is similar to ${seedMovie.title}...`;
     setContextualLoadingText(loadingText);
     setLoading(true);
     setError("");
@@ -288,8 +339,12 @@ export default function Home() {
         body: JSON.stringify({
           selectedColors: selectedColors.map((id) => moodColors.find((color) => color.id === id)),
           direction,
-          sliders,
-          filters: { releaseMix, runtime, language, ratingComfort },
+          sliders: {
+            pace: Math.min(100, Math.max(0, sliders.pace)),
+            tone: Math.min(100, Math.max(0, sliders.tone)),
+            complexity: Math.min(100, Math.max(0, sliders.complexity)),
+            intensity: Math.min(100, Math.max(0, sliders.intensity)),
+          },
           exclude_ids: updatedExcludeIds,
           seed_movie_id: seedMovie.id,
         }),
@@ -303,7 +358,7 @@ export default function Home() {
       setExcludeIds((prev) => Array.from(new Set([...prev, ...recs.map((m) => m.id)])));
       setStep(4);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load similar movies.");
+      setError(toUserFriendlyError(caught));
     } finally {
       setLoading(false);
       setContextualLoadingText("");
@@ -318,19 +373,28 @@ export default function Home() {
         </header>
 
         <div className="flex-1 py-8 w-full">
+          {step > 0 && <ProgressIndicator step={step} setStep={setStep} />}
           <section className="flex min-h-[72vh] flex-col justify-center">
             <AnimatePresence mode="wait">
-              {step === 0 && <OpeningPanel key="opening" onStart={() => setStep(1)} />}
+              {step === 0 && (
+                <OpeningPanel
+                  key="opening"
+                  onStart={() => setStep(1)}
+                  lastVibe={lastVibe}
+                  onUseLastVibe={restoreLastVibe}
+                />
+              )}
               {step === 1 && (
                 <StepCard
                   key="colors"
                   eyebrow="Step 1"
                   title="Pick 2 colors that match your current vibe."
+                  onBack={() => setStep(0)}
                   action={
                     <button
                       disabled={selectedColors.length < 2}
                       onClick={() => setStep(2)}
-                      className="rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.22)] disabled:cursor-not-allowed disabled:opacity-40"
+                      className="rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.22)] disabled:cursor-not-allowed disabled:opacity-40 transition-all hover:scale-[1.02] active:scale-[0.98]"
                     >
                       Continue
                     </button>
@@ -368,7 +432,12 @@ export default function Home() {
               )}
 
               {step === 2 && (
-                <StepCard key="direction" eyebrow="Step 2" title="Do you want a movie that reflects your current mood or changes it?">
+                <StepCard
+                  key="direction"
+                  eyebrow="Step 2"
+                  title="Do you want a movie that reflects your current mood or changes it?"
+                  onBack={() => setStep(1)}
+                >
                   <div className="grid gap-3 sm:grid-cols-2">
                     {[
                       ["reflect", "Reflect my mood", "Stay with this feeling, but make it cinematic."],
@@ -398,14 +467,15 @@ export default function Home() {
                 <StepCard
                   key="sliders"
                   eyebrow="Step 3"
-                  title="Set your cognitive bandwidth."
+                  title="Fine-tune the vibe."
+                  onBack={() => setStep(2)}
                   action={
                     <button
                       onClick={getRecommendations}
                       disabled={loading}
-                      className="inline-flex rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.24)] disabled:opacity-60"
+                      className="inline-flex rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.24)] disabled:opacity-60 transition-all hover:scale-[1.02] active:scale-[0.98]"
                     >
-                      {loading ? "Finding five..." : "Generate five choices"}
+                      {loading ? "Finding your five..." : "Find my five"}
                     </button>
                   }
                 >
@@ -449,6 +519,7 @@ export default function Home() {
                         label={key}
                         left={labels[0]}
                         right={labels[1]}
+                        helper={labels[2]}
                         value={sliders[key as keyof typeof sliders]}
                         onChange={(value) => setSliders((current) => ({ ...current, [key]: value }))}
                       />
@@ -512,7 +583,7 @@ export default function Home() {
                   </AnimatePresence>
 
                   {!loading && (
-                    <div className="mt-12 flex justify-center">
+                    <div className="mt-12 flex flex-col sm:flex-row justify-center items-center gap-4">
                       <button
                         onClick={fetchMoreRecommendations}
                         disabled={loadingMore}
@@ -520,6 +591,14 @@ export default function Home() {
                       >
                         <Sparkles size={16} className={loadingMore ? "animate-spin text-[color:var(--accent)]" : "text-[color:var(--accent)]"} />
                         {loadingMore ? "Curating a new batch..." : "Not feeling these? Show me 5 more."}
+                      </button>
+
+                      <button
+                        onClick={() => setStep(3)}
+                        className="inline-flex items-center gap-2.5 rounded-full border border-[color:var(--accent)]/20 bg-[color:var(--accent)]/5 px-6 py-3.5 text-sm font-medium text-[color:var(--accent)] transition hover:bg-[color:var(--accent)]/15 active:scale-[0.98]"
+                      >
+                        <Sliders size={16} />
+                        Adjust vibe calibration
                       </button>
                     </div>
                   )}
@@ -533,9 +612,9 @@ export default function Home() {
                   className="flex flex-col items-center justify-center text-center py-20 px-6 rounded-[32px] border border-dashed border-white/10 bg-white/[0.01]"
                 >
                   <Film size={48} className="text-white/20 mb-4" />
-                  <h3 className="font-serif text-2xl mb-2 text-white/90">End of the cinematic map</h3>
+                  <h3 className="font-serif text-2xl mb-2 text-white/90">Vibe Recalibration Needed</h3>
                   <p className="text-sm text-white/50 max-w-md leading-relaxed">
-                    We've explored every corner of this vibe. Try adjusting your sliders or picking new colors to recalibrate your evening!
+                    We couldn&apos;t find any films matching this exact combination. Try adjusting your intensity sliders, selecting new mood colors, or trying a different emotional direction!
                   </p>
                   <button
                     onClick={() => setStep(1)}
@@ -639,7 +718,25 @@ function BrandAnimation() {
   );
 }
 
-function OpeningPanel({ onStart }: { onStart: () => void }) {
+function OpeningPanel({
+  onStart,
+  lastVibe,
+  onUseLastVibe,
+}: {
+  onStart: () => void;
+  lastVibe: {
+    selectedColors: string[];
+    direction: "reflect" | "shift";
+    sliders: { pace: number; tone: number; complexity: number; intensity: number };
+  } | null;
+  onUseLastVibe: () => void;
+}) {
+  const colorNames = lastVibe
+    ? lastVibe.selectedColors
+        .map((id) => moodColors.find((c) => c.id === id)?.name || id)
+        .join(" & ")
+    : "";
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 30, filter: "blur(10px)" }}
@@ -653,13 +750,54 @@ function OpeningPanel({ onStart }: { onStart: () => void }) {
       <p className="mt-6 max-w-xl text-base leading-relaxed text-zinc-400 font-light mx-auto">
         Calibrate your vibe in under a minute. Get exactly five emotionally relevant movies, each with a reason and a trailer.
       </p>
-      <button
-        onClick={onStart}
-        className="mt-12 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-4 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98]"
-      >
-        <Sparkles size={18} />
-        Begin
-      </button>
+
+      {lastVibe ? (
+        <div className="mt-12 flex flex-col items-center justify-center gap-6">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="glass-card rounded-2xl border border-white/[0.04] p-5 w-full max-w-md text-left shadow-xl"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs uppercase tracking-widest text-[color:var(--accent)] font-semibold">Welcome Back</span>
+              <span className="text-[10px] text-zinc-500 italic">Saved Vibe Found</span>
+            </div>
+            <p className="text-sm text-zinc-300 mb-2 leading-relaxed">
+              Your last setup had <span className="font-semibold text-white">{colorNames}</span> colors, matching in <span className="font-semibold text-white">{lastVibe.direction === "reflect" ? "reflective" : "shifting"}</span> mode.
+            </p>
+            <div className="flex flex-wrap gap-2.5 mt-2">
+              <div className="text-[10px] bg-white/[0.05] rounded-full px-2 py-0.5 border border-white/[0.04] text-zinc-400">Pace: {lastVibe.sliders.pace}</div>
+              <div className="text-[10px] bg-white/[0.05] rounded-full px-2 py-0.5 border border-white/[0.04] text-zinc-400">Tone: {lastVibe.sliders.tone}</div>
+              <div className="text-[10px] bg-white/[0.05] rounded-full px-2 py-0.5 border border-white/[0.04] text-zinc-400">Complexity: {lastVibe.sliders.complexity}</div>
+              <div className="text-[10px] bg-white/[0.05] rounded-full px-2 py-0.5 border border-white/[0.04] text-zinc-400">Intensity: {lastVibe.sliders.intensity}</div>
+            </div>
+          </motion.div>
+
+          <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
+            <button
+              onClick={onUseLastVibe}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-4 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <Sparkles size={18} />
+              Use Last Vibe
+            </button>
+            <button
+              onClick={onStart}
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-8 py-4 font-semibold text-zinc-300 hover:bg-white/[0.08] hover:text-white transition"
+            >
+              Recalibrate Vibe
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={onStart}
+          className="mt-12 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-4 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Sparkles size={18} />
+          Begin
+        </button>
+      )}
     </motion.div>
   );
 }
@@ -669,11 +807,13 @@ function StepCard({
   title,
   children,
   action,
+  onBack,
 }: {
   eyebrow: string;
   title: string;
   children: React.ReactNode;
   action?: React.ReactNode;
+  onBack?: () => void;
 }) {
   return (
     <motion.section
@@ -687,9 +827,20 @@ function StepCard({
       <div className="absolute inset-0 rounded-[32px] border border-white/[0.05] border-t-white/[0.15] pointer-events-none z-20" />
       
       <div className="relative z-10 mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="mb-2 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-semibold">{eyebrow}</p>
-          <h2 className="max-w-4xl font-serif text-4xl leading-tight text-balance sm:text-5xl text-zinc-50 tracking-[-0.02em] font-semibold">{title}</h2>
+        <div className="flex items-start gap-4">
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/[0.03] text-zinc-400 backdrop-blur-md transition hover:border-white/15 hover:bg-white/[0.08] hover:text-white"
+              title="Go back"
+            >
+              <ArrowLeft size={16} />
+            </button>
+          )}
+          <div>
+            <p className="mb-2 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-semibold">{eyebrow}</p>
+            <h2 className="max-w-4xl font-serif text-4xl leading-tight text-balance sm:text-5xl text-zinc-50 tracking-[-0.02em] font-semibold">{title}</h2>
+          </div>
         </div>
         {action}
       </div>
@@ -704,12 +855,14 @@ function Slider({
   label,
   left,
   right,
+  helper,
   value,
   onChange,
 }: {
   label: string;
   left: string;
   right: string;
+  helper: string;
   value: number;
   onChange: (value: number) => void;
 }) {
@@ -725,7 +878,85 @@ function Slider({
         <span>{left}</span>
         <span className="text-right">{right}</span>
       </span>
+      <span className="relative z-10 block mt-2.5 text-center text-[11px] text-zinc-500 tracking-wider font-light italic">
+        {helper}
+      </span>
     </label>
+  );
+}
+
+function ProgressIndicator({ step, setStep }: { step: number; setStep: (step: number) => void }) {
+  const steps = [
+    { number: 1, label: "Mood" },
+    { number: 2, label: "Direction" },
+    { number: 3, label: "Vibe" },
+    { number: 4, label: "Results" },
+  ];
+
+  return (
+    <div className="mx-auto mb-10 w-full max-w-xl px-4">
+      <div className="relative flex items-center justify-between">
+        {/* Progress bar line */}
+        <div className="absolute left-0 top-1/2 h-[2px] w-full -translate-y-1/2 bg-white/[0.06]" />
+        <motion.div
+          className="absolute left-0 top-1/2 h-[2px] -translate-y-1/2 bg-[color:var(--accent)]"
+          initial={{ width: "0%" }}
+          animate={{
+            width: `${((Math.max(1, Math.min(4, step)) - 1) / 3) * 100}%`,
+          }}
+          transition={{ duration: 0.4, ease: "easeInOut" }}
+        />
+
+        {steps.map((s) => {
+          const isActive = step === s.number;
+          const isCompleted = step > s.number;
+          const isClickable = s.number < step; // Allow going back
+
+          return (
+            <button
+              key={s.number}
+              disabled={!isClickable}
+              onClick={() => setStep(s.number)}
+              className={`relative z-10 flex flex-col items-center gap-2 group transition duration-300 ${
+                isClickable ? "cursor-pointer animate-pulse" : "cursor-default opacity-80"
+              }`}
+            >
+              <motion.div
+                animate={{
+                  scale: isActive ? 1.15 : 1,
+                  backgroundColor: isActive
+                    ? "var(--accent)"
+                    : isCompleted
+                    ? "var(--accent)"
+                    : "#151518",
+                  borderColor: isActive
+                    ? "var(--accent)"
+                    : isCompleted
+                    ? "var(--accent)"
+                    : "rgba(255,255,255,0.12)",
+                }}
+                className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-all ${
+                  isActive ? "text-black shadow-[0_0_18px_rgb(var(--accent-rgb)/0.3)]" : isCompleted ? "text-black" : "text-zinc-500"
+                }`}
+              >
+                {isCompleted ? <Check size={14} strokeWidth={3} /> : s.number}
+              </motion.div>
+              <span
+                className={`text-[10px] sm:text-[11px] font-semibold tracking-wider uppercase transition duration-300 ${
+                  isActive
+                    ? "text-[color:var(--accent)]"
+                    : isCompleted
+                    ? "text-zinc-300 group-hover:text-[color:var(--accent)]"
+                    : "text-zinc-500"
+                }`}
+              >
+                {s.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -808,7 +1039,7 @@ function MovieCard({
             {movie.title}
           </h3>
           <p className="mt-1 text-xs text-zinc-400 font-normal">
-            {movie.year} {movie.runtime ? `• ${movie.runtime} min` : ""}
+            {movie.year} {movie.runtime ? <>{" \u2022 "}{movie.runtime} min</> : ""}
           </p>
           
           <div className="mt-3 flex flex-wrap gap-1">
@@ -936,17 +1167,17 @@ function MovieDetailModal({
                 <span className="font-semibold text-[color:var(--accent)]">{movie.year}</span>
                 {movie.runtime && (
                   <>
-                    <span className="text-white/20">•</span>
+                    <span className="text-white/20">{" \u2022 "}</span>
                     <span>{movie.runtime} minutes</span>
                   </>
                 )}
-                <span className="text-white/20">•</span>
+                <span className="text-white/20">{" \u2022 "}</span>
                 <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-0.5 text-xs text-zinc-300">
                   {movie.matchScore}% Match
                 </span>
                 {movie.rating > 0 && (
                   <>
-                    <span className="text-white/20">•</span>
+                    <span className="text-white/20">{" \u2022 "}</span>
                     <span className="inline-flex items-center gap-1.5 text-zinc-300">
                       <Star size={14} fill="#eab308" stroke="#eab308" className="translate-y-[-1px]" />
                       <span className="font-bold">{movie.rating.toFixed(1)}</span>
@@ -1035,37 +1266,6 @@ function SkeletonGrid() {
       {[0, 1, 2].map((item) => (
         <div key={item} className="skeleton-sheen h-40 rounded-[24px] border border-white/[0.08] bg-white/[0.035] backdrop-blur-xl" />
       ))}
-    </div>
-  );
-}
-
-function Segmented<T extends string>({
-  label,
-  value,
-  setValue,
-  options,
-}: {
-  label: string;
-  value: T;
-  setValue: (value: T) => void;
-  options: T[];
-}) {
-  return (
-    <div>
-      <p className="mb-2 text-xs uppercase tracking-[0.18em] text-white/42">{label}</p>
-      <div className="flex rounded-full border border-white/[0.08] bg-white/[0.035] p-1">
-        {options.map((option) => (
-          <button
-            key={option}
-            onClick={() => setValue(option)}
-            className={`min-w-0 flex-1 rounded-full px-2 py-2 text-xs capitalize transition ${
-              value === option ? "bg-[color:var(--accent)] text-black" : "text-white/58 hover:text-white"
-            }`}
-          >
-            {option === "under90" ? "Under 90" : option}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
