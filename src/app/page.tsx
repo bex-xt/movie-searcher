@@ -9,6 +9,7 @@ import {
   Bookmark,
   Brain,
   Check,
+  ChevronRight,
   Clapperboard,
   Compass,
   Eye,
@@ -25,6 +26,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { getOfflineRecommendations } from "@/offlinePool";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -64,6 +66,8 @@ type Recommendation = {
     name: string;
     logo: string;
   }[];
+  isOffline?: boolean;
+  matchChips?: string[];
 };
 
 type SavedMovie = Recommendation & {
@@ -84,10 +88,10 @@ const moodColors: MoodColor[] = [
 ];
 
 const sliderCopy = {
-  pace: ["Slow / Art-House", "Fast / Adrenaline", "slow burn vs fast-moving"],
-  tone: ["Ruthless / Gore", "Soft / Feel-Good", "dark vs comforting"],
-  complexity: ["Simple / Comforting", "Mind-Bending / Surreal", "easy watch vs mind-bending"],
-  intensity: ["Soft / Low-stakes", "Heavy / Intense", "low-stakes vs heavy"],
+  pace: ["Deliberate / Slow-Burn", "Dynamic / High-Tempo", "meditative vs high-velocity"],
+  tone: ["Visceral / Shadowed", "Luminous / Uplifting", "dark atmospheric vs warm comforting"],
+  complexity: ["Direct / Uncomplicated", "Intricate / Mind-Bending", "straightforward narrative vs deep enigma"],
+  intensity: ["Subtle / Low-Stakes", "Profound / High-Stakes", "gentle ambiance vs heavy emotional impact"],
 };
 
 const presets = [
@@ -156,6 +160,17 @@ function getVibeLabel(key: string, value: number): string {
   return mid;
 }
 
+const loadingMessages = [
+  "Reading your mood profile...",
+  "Analyzing color spectrum parameters...",
+  "Balancing tone and pacing algorithms...",
+  "Sculpting narrative texture complexity...",
+  "Optimizing cinematic emotional resonance...",
+  "Eliminating infinite scroll parameters...",
+  "Bypassing decision fatigue syndromics...",
+  "Curating exactly five high-caliber matches..."
+];
+
 function formatSavedAt(timestamp?: number): string {
   if (!timestamp) return "Saved recently";
   const diff = Date.now() - timestamp;
@@ -177,6 +192,12 @@ export default function Home() {
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [direction, setDirection] = useState<Direction>("reflect");
   const [sliders, setSliders] = useState({ pace: 45, tone: 58, complexity: 48, intensity: 42 });
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
+  async function retryConnection() {
+    setIsOfflineMode(false);
+    await getRecommendations();
+  }
 
   const [lastVibe, setLastVibe] = useState<{
     selectedColors: string[];
@@ -214,6 +235,8 @@ export default function Home() {
   const [activeTrailer, setActiveTrailer] = useState<Recommendation | null>(null);
   const [excludeIds, setExcludeIds] = useState<number[]>([]);
   const [contextualLoadingText, setContextualLoadingText] = useState("");
+  const [isRequestSlow, setIsRequestSlow] = useState(false);
+  const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
 
   const [savedMovies, setSavedMovies] = useState<SavedMovie[]>([]);
   const [showSavedPanel, setShowSavedPanel] = useState(false);
@@ -231,6 +254,14 @@ export default function Home() {
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!loading) return;
+    const interval = setInterval(() => {
+      setLoadingMessageIndex((prev) => (prev + 1) % loadingMessages.length);
+    }, 1300);
+    return () => clearInterval(interval);
+  }, [loading]);
 
   function persistSavedMovies(movies: SavedMovie[]) {
     setSavedMovies(movies);
@@ -278,6 +309,14 @@ export default function Home() {
     [selectedColors],
   );
 
+  const selectedColorObjects = useMemo(
+    () =>
+      selectedColors
+        .map((id) => moodColors.find((color) => color.id === id))
+        .filter(Boolean) as MoodColor[],
+    [selectedColors],
+  );
+
   const shellStyle = useMemo(
     () =>
       ({
@@ -309,6 +348,28 @@ export default function Home() {
     return "We encountered an unexpected glitch while curating your movies. Please try again.";
   }
 
+  function triggerOfflineFallback() {
+    setIsRequestSlow(false);
+    setLoading(false);
+    try {
+      const fallbackColors = selectedColors
+        .map((id) => moodColors.find((color) => color.id === id))
+        .filter(Boolean) as MoodColor[];
+      const recs = getOfflineRecommendations(
+        fallbackColors,
+        direction,
+        sliders,
+        []
+      );
+      setRecommendations(recs);
+      setIsOfflineMode(true);
+      setExcludeIds(recs.map((m) => m.id));
+      setStep(4);
+    } catch {
+      setError("Unable to generate alternative picks offline.");
+    }
+  }
+
   async function getRecommendations() {
     if (selectedColors.length < 2) {
       setError("Please select at least two mood colors to calibrate your vibe.");
@@ -319,6 +380,12 @@ export default function Home() {
     setError("");
     setRecommendations([]);
     setExcludeIds([]);
+    setIsRequestSlow(false);
+    setStep(4); // Immediate transition to Step 4 results view with skeletons visible
+
+    const slowTimeout = setTimeout(() => {
+      setIsRequestSlow(true);
+    }, 7000);
 
     try {
       const response = await fetch("/api/recommend", {
@@ -337,13 +404,13 @@ export default function Home() {
         }),
       });
 
-      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string };
+      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string; isOffline?: boolean };
       if (!response.ok) throw new Error(data.error || "Recommendation service failed.");
 
       const recs = data.recommendations || [];
       setRecommendations(recs);
+      setIsOfflineMode(!!data.isOffline);
       setExcludeIds(recs.map((m) => m.id));
-      setStep(4);
 
       try {
         localStorage.setItem(
@@ -359,9 +426,27 @@ export default function Home() {
         console.error("Failed to save vibe to localStorage", e);
       }
     } catch (caught) {
-      setError(toUserFriendlyError(caught));
+      console.warn("Client network request failed. Triggering offline fallback curation:", caught);
+      try {
+        const fallbackColors = selectedColors
+          .map((id) => moodColors.find((color) => color.id === id))
+          .filter(Boolean) as MoodColor[];
+        const recs = getOfflineRecommendations(
+          fallbackColors,
+          direction,
+          sliders,
+          []
+        );
+        setRecommendations(recs);
+        setIsOfflineMode(true);
+        setExcludeIds(recs.map((m) => m.id));
+      } catch {
+        setError(toUserFriendlyError(caught));
+      }
     } finally {
+      clearTimeout(slowTimeout);
       setLoading(false);
+      setIsRequestSlow(false);
     }
   }
 
@@ -388,7 +473,7 @@ export default function Home() {
         }),
       });
 
-      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string };
+      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string; isOffline?: boolean };
       if (!response.ok) throw new Error(data.error || "Recommendation service failed.");
 
       const recs = data.recommendations || [];
@@ -396,10 +481,31 @@ export default function Home() {
         setRecommendations([]);
       } else {
         setRecommendations(recs);
+        setIsOfflineMode(!!data.isOffline);
         setExcludeIds((prev) => [...prev, ...recs.map((m) => m.id)]);
       }
     } catch (caught) {
-      setError(toUserFriendlyError(caught));
+      console.warn("Client network request failed during show more. Falling back to offline:", caught);
+      try {
+        const fallbackColors = selectedColors
+          .map((id) => moodColors.find((color) => color.id === id))
+          .filter(Boolean) as { id: string; name: string; tags: string[] }[];
+        const recs = getOfflineRecommendations(
+          fallbackColors,
+          direction,
+          sliders,
+          excludeIds
+        );
+        if (recs.length === 0) {
+          setRecommendations([]);
+        } else {
+          setRecommendations(recs);
+          setIsOfflineMode(true);
+          setExcludeIds((prev) => [...prev, ...recs.map((m) => m.id)]);
+        }
+      } catch {
+        setError("Unable to generate alternative picks offline.");
+      }
     } finally {
       setLoadingMore(false);
     }
@@ -434,15 +540,33 @@ export default function Home() {
         }),
       });
 
-      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string };
+      const data = (await response.json()) as { recommendations?: Recommendation[]; error?: string; isOffline?: boolean };
       if (!response.ok) throw new Error(data.error || "Contextual recommendation failed.");
 
       const recs = data.recommendations || [];
       setRecommendations(recs);
+      setIsOfflineMode(!!data.isOffline);
       setExcludeIds((prev) => Array.from(new Set([...prev, ...recs.map((m) => m.id)])));
       setStep(4);
     } catch (caught) {
-      setError(toUserFriendlyError(caught));
+      console.warn("Client network request failed during explore. Falling back to offline:", caught);
+      try {
+        const fallbackColors = selectedColors
+          .map((id) => moodColors.find((color) => color.id === id))
+          .filter(Boolean) as { id: string; name: string; tags: string[] }[];
+        const recs = getOfflineRecommendations(
+          fallbackColors,
+          direction,
+          sliders,
+          updatedExcludeIds
+        );
+        setRecommendations(recs);
+        setIsOfflineMode(true);
+        setExcludeIds((prev) => Array.from(new Set([...prev, ...recs.map((m) => m.id)])));
+        setStep(4);
+      } catch {
+        setError(toUserFriendlyError(caught));
+      }
     } finally {
       setLoading(false);
       setContextualLoadingText("");
@@ -451,8 +575,8 @@ export default function Home() {
 
   return (
     <main style={shellStyle} className="min-h-screen overflow-x-hidden text-white">
-      <section className="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-4 py-8 sm:px-6 lg:px-8">
-        <header className="flex items-center justify-between py-4 mb-16 border-b border-white/[0.04]">
+      <section className="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-3 pb-8 pt-4 sm:px-6 sm:py-8 lg:px-8">
+        <header className="mb-8 flex items-center justify-between border-b border-white/[0.04] py-3 sm:mb-16 sm:py-4">
           <BrandAnimation />
           <button
             onClick={() => setShowSavedPanel(true)}
@@ -468,9 +592,9 @@ export default function Home() {
           </button>
         </header>
 
-        <div className="flex-1 py-8 w-full">
+        <div className="w-full flex-1 py-3 sm:py-8">
           {step > 0 && <ProgressIndicator step={step} setStep={setStep} />}
-          <section className="flex min-h-[72vh] flex-col justify-center">
+          <section className="flex min-h-[calc(100svh-9rem)] flex-col justify-start pt-14 sm:min-h-[72vh] sm:justify-center sm:pt-0">
             <AnimatePresence mode="wait">
               {step === 0 && (
                 <OpeningPanel
@@ -483,8 +607,8 @@ export default function Home() {
               {step === 1 && (
                 <StepCard
                   key="colors"
-                  eyebrow="Step 1"
-                  title="Pick 2 colors that match your current vibe."
+                  eyebrow="Calibration • Step 1"
+                  title="Select two colors that mirror your current emotional spectrum."
                   onBack={() => setStep(0)}
                   action={
                     <button
@@ -492,18 +616,18 @@ export default function Home() {
                       onClick={() => setStep(2)}
                       className="rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.22)] disabled:cursor-not-allowed disabled:opacity-40 transition-all hover:scale-[1.02] active:scale-[0.98]"
                     >
-                      Continue
+                      Confirm Spectrum
                     </button>
                   }
                 >
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-5">
                     {moodColors.map((color) => {
                       const selected = selectedColors.includes(color.id);
                       return (
                         <button
                           key={color.id}
                           onClick={() => toggleColor(color.id)}
-                          className={`group min-h-32 rounded-[20px] border p-3 text-left backdrop-blur-xl transition duration-300 hover:-translate-y-1 ${
+                          className={`group min-h-28 rounded-[18px] border p-2.5 text-left backdrop-blur-xl transition duration-300 hover:-translate-y-1 sm:min-h-32 sm:rounded-[20px] sm:p-3 ${
                             selected
                               ? "border-[color:var(--accent)]/70 bg-white/[0.07] shadow-[0_0_36px_rgb(var(--accent-rgb)/0.18)]"
                               : "border-white/[0.08] bg-white/[0.03] hover:border-white/20"
@@ -511,13 +635,13 @@ export default function Home() {
                         >
                           <motion.div
                             animate={{ scale: selected ? 1.04 : 1 }}
-                            className="mb-4 h-16 rounded-2xl shadow-inner shadow-white/10"
+                            className="mb-3 h-12 rounded-2xl shadow-inner shadow-white/10 sm:mb-4 sm:h-16"
                             style={{
                               background: `radial-gradient(circle at 25% 20%, rgba(255,255,255,.35), transparent 28%), linear-gradient(135deg, ${color.hex}, #050505)`,
                             }}
                           />
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium text-white/86">{color.name}</span>
+                            <span className="text-xs font-medium text-white/86 sm:text-sm">{color.name}</span>
                             {selected && <Check size={16} className="text-[color:var(--accent)]" />}
                           </div>
                         </button>
@@ -530,14 +654,14 @@ export default function Home() {
               {step === 2 && (
                 <StepCard
                   key="direction"
-                  eyebrow="Step 2"
-                  title="Do you want a movie that reflects your current mood or changes it?"
+                  eyebrow="Calibration • Step 2"
+                  title="Choose your trajectory: Do you wish to reflect your mood or shift it?"
                   onBack={() => setStep(1)}
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
                     {[
-                      ["reflect", "Reflect my mood", "Stay with this feeling, but make it cinematic."],
-                      ["shift", "Shift my mood", "Move somewhere else without breaking the spell."],
+                      ["reflect", "Echo My Vibe", "Lean into your current feeling. Let the cinema mirror your emotional state."],
+                      ["shift", "Pivot My Vibe", "Gently steer your mood to a new cinematic frequency."],
                     ].map(([value, label, copy]) => (
                       <button
                         key={value}
@@ -562,8 +686,8 @@ export default function Home() {
               {step === 3 && (
                 <StepCard
                   key="sliders"
-                  eyebrow="Step 3"
-                  title="Fine-tune the vibe."
+                  eyebrow="Calibration • Step 3"
+                  title="Sculpt the narrative texture."
                   onBack={() => setStep(2)}
                   action={
                     <button
@@ -571,14 +695,14 @@ export default function Home() {
                       disabled={loading}
                       className="inline-flex rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_0_28px_rgb(var(--accent-rgb)/0.24)] disabled:opacity-60 transition-all hover:scale-[1.02] active:scale-[0.98]"
                     >
-                      {loading ? "Finding your five..." : "Find my five"}
+                      {loading ? "Curating selection..." : "Reveal My Five"}
                     </button>
                   }
                 >
                   <div className="mb-10">
-                    <p className="mb-4 text-xs uppercase tracking-[0.18em] text-zinc-500 font-medium">Quick Cognitive Presets</p>
+                    <p className="mb-4 text-xs uppercase tracking-[0.18em] text-zinc-500 font-medium">Cinematic Archetypes</p>
                     <div 
-                      className="flex overflow-x-auto gap-3.5 pb-3 scrollbar-hide -mx-1 px-1"
+                      className="-mx-3 flex snap-x gap-2.5 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-1 sm:gap-3.5 sm:px-1"
                       style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
                     >
                       {presets.map((preset) => {
@@ -593,7 +717,7 @@ export default function Home() {
                           <button
                             key={preset.label}
                             onClick={() => setSliders(preset.values)}
-                            className={`relative flex items-center gap-2 px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-all glass-pill ${
+                            className={`relative flex min-h-11 snap-start items-center gap-2 whitespace-nowrap px-4 py-2.5 text-xs font-semibold transition-all glass-pill ${
                               isActive
                                 ? "bg-white/[0.12] border-white/[0.4] text-zinc-50 shadow-[inset_0_1px_12px_rgba(255,255,255,0.08)] scale-[1.02]"
                                 : "text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
@@ -625,50 +749,194 @@ export default function Home() {
                 </StepCard>
               )}
 
-              {step === 4 && recommendations.length > 0 && (
+              {step === 4 && (recommendations.length > 0 || loading) && (
                 <motion.section key="results" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
-                  <div className="mb-10">
-                    <p className="mb-2 text-sm uppercase tracking-[0.28em] text-[color:var(--accent)]">The Rule of Five</p>
-                    <h1 className="max-w-4xl font-serif text-4xl leading-[0.96] text-balance sm:text-6xl">Five choices. No spiral.</h1>
-                    <p className="mt-4 max-w-2xl text-base leading-relaxed text-white/58">
-                      Based on your <span className="font-medium text-white/90">{selectedMoodTags.slice(0, 2).join(" + ") || "cinematic"}</span> mood, these five avoid endless scrolling.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {selectedMoodTags.slice(0, 4).map((tag) => (
-                        <span key={tag} className="rounded-full border border-[color:var(--accent)]/20 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-medium text-[color:var(--accent)]">
-                          {tag}
-                        </span>
-                      ))}
-                      <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                        {getVibeLabel("pace", sliders.pace)}
-                      </span>
-                      <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                        {getVibeLabel("tone", sliders.tone)}
-                      </span>
+                  {isOfflineMode && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-[24px] border border-amber-500/20 bg-amber-500/5 px-6 py-4 text-sm text-amber-200/90 backdrop-blur-xl"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Sparkles className="text-amber-400 shrink-0 animate-pulse" size={18} />
+                        <p className="leading-relaxed text-left">
+                          <strong className="text-white font-semibold">Offline Picks Mode Active:</strong> We couldn&apos;t connect to the live database, but our offline matching engine has curated 5 premium films matching your vibe signature.
+                        </p>
+                      </div>
+                      <button
+                        onClick={retryConnection}
+                        disabled={loading}
+                        className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50"
+                      >
+                        {loading ? "Re-connecting..." : "Retry Connection"}
+                      </button>
+                    </motion.div>
+                  )}
+
+                  {/* Results Dashboard Header */}
+                  <div className="mb-8 grid gap-4 lg:grid-cols-12 lg:gap-6 lg:mb-10 items-stretch">
+                    {/* Left Column: Heading and Rule of Five */}
+                    <div className="lg:col-span-6 flex flex-col justify-between gap-6">
+                      <div className="text-left">
+                        <p className="mb-2 text-xs uppercase tracking-[0.28em] text-[color:var(--accent)] font-semibold">The Curation</p>
+                        <h1 className="font-serif text-4xl sm:text-5xl lg:text-6xl font-bold leading-[1.05] tracking-tight text-zinc-50 text-balance">
+                          Five Films.<br />Zero Scrolling.
+                        </h1>
+                      </div>
+
+                      {/* Rule of Five Cognitive Explanation */}
+                      <div className="relative overflow-hidden rounded-[22px] border border-white/[0.05] bg-white/[0.01] p-4 backdrop-blur-md shadow-md sm:rounded-[24px] sm:p-5">
+                        {/* Light flare */}
+                        <div className="absolute inset-0 rounded-[24px] border border-white/[0.03] border-t-white/[0.12] pointer-events-none" />
+                        <div className="flex gap-3.5 items-start">
+                          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)]/10 text-[color:var(--accent)]">
+                            <Brain size={13} className="animate-pulse" />
+                          </div>
+                          <div className="text-left text-xs leading-relaxed text-zinc-400">
+                            <p className="font-semibold text-zinc-200 text-sm tracking-tight mb-1">The Rule of Five Paradigm</p>
+                            Cognitive science proves that choice paralysis sets in beyond five options. By curating exactly five highly-calibrated films, we bypass the endless scroll and eliminate decision fatigue completely.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column: Vibe Signature Dashboard */}
+                    <div className="lg:col-span-6">
+                      <div className="relative overflow-hidden rounded-[24px] border border-white/[0.06] bg-white/[0.02] p-4 backdrop-blur-2xl shadow-xl h-full flex flex-col justify-between sm:rounded-[28px] sm:p-6">
+                        {/* Accent glow behind */}
+                        <div className="absolute -right-16 -top-16 h-36 w-36 rounded-full bg-[color:var(--accent)]/10 blur-3xl pointer-events-none" />
+                        {/* Inner highlight border */}
+                        <div className="absolute inset-0 rounded-[28px] border border-white/[0.02] border-t-white/[0.1] pointer-events-none" />
+
+                        <div className="flex items-center justify-between border-b border-white/[0.05] pb-4 mb-5">
+                          <div className="flex items-center gap-2">
+                            <Sliders size={14} className="text-[color:var(--accent)]" />
+                            <h3 className="text-xs uppercase tracking-[0.2em] font-bold text-zinc-300">Vibe Signature</h3>
+                          </div>
+                          <span className="flex items-center gap-1.5 rounded-full bg-[color:var(--accent)]/10 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[color:var(--accent)]">
+                            <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--accent)] animate-ping" />
+                            Calibrated
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-6 flex-grow">
+                          {/* Spectrum */}
+                          <div className="flex flex-col gap-2 text-left">
+                            <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Mood Spectrum</span>
+                            <div className="flex flex-col gap-2">
+                              {selectedColorObjects.map((color) => (
+                                <div
+                                  key={color.id}
+                                  className="flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] pl-2 pr-3 py-1.5 text-xs text-zinc-300 w-fit animate-fade-in"
+                                >
+                                  <span
+                                    className="h-3 w-3 rounded-full border border-white/20 shrink-0"
+                                    style={{
+                                      background: `radial-gradient(circle at 35% 35%, rgba(255,255,255,0.45), transparent), ${color.hex}`,
+                                      boxShadow: `0 0 10px ${color.hex}60`
+                                    }}
+                                  />
+                                  <span className="font-semibold text-xs leading-none">{color.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="text-[10px] text-zinc-500 font-medium italic mt-1 leading-tight truncate">
+                              {selectedMoodTags.slice(0, 3).join(", ")}
+                            </p>
+                          </div>
+
+                          {/* Trajectory */}
+                          <div className="flex flex-col gap-2 text-left">
+                            <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Trajectory</span>
+                            <div className="flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-3.5 py-1.5 text-xs text-zinc-200 font-semibold w-fit">
+                              {direction === "reflect" ? (
+                                <>
+                                  <Eye size={12} className="text-[color:var(--accent)] animate-pulse" />
+                                  <span>Echo Vibe</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Compass size={12} className="text-[color:var(--accent)] animate-spin-slow" />
+                                  <span>Pivot Vibe</span>
+                                </>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-zinc-500 leading-normal font-medium mt-1">
+                              {direction === "reflect" ? "Mirroring and leaning into your current feelings." : "Steering mood toward new frequencies."}
+                            </p>
+                          </div>
+
+                          {/* Narrative Sliders */}
+                          <div className="col-span-2 flex flex-col gap-2 text-left sm:col-span-1">
+                            <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Narrative Texture</span>
+                            <div className="grid grid-cols-1 gap-2 bg-white/[0.02] border border-white/[0.04] p-3 rounded-2xl">
+                              {[
+                                ["Pace", sliders.pace, getVibeLabel("pace", sliders.pace)],
+                                ["Tone", sliders.tone, getVibeLabel("tone", sliders.tone)],
+                                ["Complexity", sliders.complexity, getVibeLabel("complexity", sliders.complexity)],
+                                ["Intensity", sliders.intensity, getVibeLabel("intensity", sliders.intensity)],
+                              ].map(([label, , vibe]) => (
+                                <div key={label as string} className="flex items-center justify-between gap-2 text-[10px]">
+                                  <span className="text-zinc-500 font-medium">{label as string}</span>
+                                  <span className="font-bold text-zinc-200 capitalize truncate text-right">{(vibe as string).replace("-", " ")}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   
                   <AnimatePresence mode="wait">
-                    {loading && contextualLoadingText ? (
+                    {loading ? (
                       <motion.div
-                        key="contextual-loader"
+                        key="curation-skeleton-loader"
                         initial={{ opacity: 0, y: 15 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -15 }}
-                        className="flex flex-col items-center justify-center text-center py-24 px-6 rounded-[32px] border border-dashed border-white/10 bg-white/[0.01] w-full"
+                        className="w-full text-left"
                       >
-                        <div className="relative mb-8 h-20 w-20">
+                        {/* Slow Request Alert */}
+                        {isRequestSlow && (
                           <motion.div
-                            animate={{ rotate: 360 }}
-                            transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
-                            className="h-full w-full rounded-full border-2 border-dashed border-[color:var(--accent)]/30 border-t-[color:var(--accent)]"
-                          />
-                          <Sparkles className="absolute inset-0 m-auto text-[color:var(--accent)] animate-pulse" size={24} />
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-[24px] border border-amber-500/20 bg-amber-500/5 px-6 py-4 text-sm text-amber-200/90 backdrop-blur-xl"
+                          >
+                            <div className="flex items-center gap-3 text-left">
+                              <Sparkles className="text-amber-400 shrink-0 animate-pulse" size={18} />
+                              <div>
+                                <strong className="text-white font-semibold block mb-0.5">Connection latency detected</strong>
+                                <p className="text-xs text-amber-200/70 leading-relaxed">
+                                  Curating live recommendations from TMDB is taking longer than expected. You can wait a bit longer, or activate our high-precision offline matching engine instantly.
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={triggerOfflineFallback}
+                              className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-5 py-2.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25 hover:scale-[1.02] active:scale-[0.98] shadow-lg"
+                            >
+                              Activate Offline Picks
+                            </button>
+                          </motion.div>
+                        )}
+
+                        {/* Dynamic Contextual / Cinematic Status Banner */}
+                        <div className="flex flex-col items-center justify-center text-center py-10 px-6 rounded-[32px] border border-white/[0.04] bg-white/[0.01] w-full mb-8 overflow-hidden relative shadow-md">
+                          <div className="relative mb-5 h-12 w-12 flex items-center justify-center rounded-full bg-[color:var(--accent)]/10 text-[color:var(--accent)] shadow-[0_0_15px_rgb(var(--accent-rgb)/0.15)] border border-[color:var(--accent)]/10">
+                            <Sparkles className="animate-pulse" size={16} />
+                          </div>
+                          <h3 className="font-serif text-xl sm:text-2xl text-zinc-200 animate-pulse font-medium tracking-wide">
+                            {contextualLoadingText || loadingMessages[loadingMessageIndex]}
+                          </h3>
+                          <p className="mt-2 text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
+                            Synthesizing exact cinematic alignments
+                          </p>
                         </div>
-                        <h3 className="font-serif text-2xl sm:text-3xl text-white/90 animate-pulse font-medium tracking-wide">
-                          {contextualLoadingText}
-                        </h3>
-                        <p className="mt-3 text-sm text-white/40 tracking-wider">Curating the perfect custom cinematic vibe...</p>
+
+                        {/* Shimmering exact skeleton grid */}
+                        <SkeletonGrid />
                       </motion.div>
                     ) : (
                       <motion.div
@@ -677,7 +945,7 @@ export default function Home() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -15 }}
                         transition={{ duration: 0.4 }}
-                        className="grid gap-6 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5"
+                         className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 md:grid-cols-3 lg:grid-cols-5"
                       >
                         {recommendations.map((movie, index) => (
                           <MovieCard
@@ -694,44 +962,55 @@ export default function Home() {
                   </AnimatePresence>
 
                   {!loading && (
-                    <div className="mt-12 flex flex-col sm:flex-row justify-center items-center gap-4">
+                    <div className="mt-10 flex flex-col justify-center items-stretch gap-3 sm:mt-12 sm:flex-row sm:items-center sm:gap-4">
                       <button
                         onClick={() => setStep(1)}
-                        className="inline-flex items-center gap-2.5 rounded-full bg-[color:var(--accent)] px-6 py-3.5 text-sm font-semibold text-black shadow-[0_0_24px_rgb(var(--accent-rgb)/0.2)] transition hover:scale-[1.02] active:scale-[0.98]"
+                        className="inline-flex items-center justify-center gap-2.5 rounded-full bg-[color:var(--accent)] px-6 py-3.5 text-sm font-semibold text-black shadow-[0_0_24px_rgb(var(--accent-rgb)/0.2)] transition hover:scale-[1.02] active:scale-[0.98]"
                       >
                         <Sliders size={16} />
-                        Recalibrate
+                        Recalibrate Vibe
                       </button>
 
                       <button
                         onClick={fetchMoreRecommendations}
                         disabled={loadingMore}
-                        className="inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-6 py-3.5 text-sm font-medium text-white/70 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white/90 disabled:opacity-50"
+                        className="inline-flex items-center justify-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-6 py-3.5 text-sm font-medium text-white/70 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white/90 disabled:opacity-50"
                       >
                         <Sparkles size={16} className={loadingMore ? "animate-spin text-[color:var(--accent)]" : "text-white/40"} />
-                        {loadingMore ? "Curating a new batch..." : "Show me 5 more"}
+                        {loadingMore ? "Curating alternatives..." : "Alternative Selection"}
                       </button>
+
+                      {isOfflineMode && (
+                        <button
+                          onClick={retryConnection}
+                          disabled={loading}
+                          className="inline-flex items-center justify-center gap-2.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-6 py-3.5 text-sm font-semibold text-amber-300 transition hover:bg-amber-500/25 hover:border-amber-500/35 hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          <Sparkles size={16} className="text-amber-400 animate-pulse" />
+                          Retry Live Database
+                        </button>
+                      )}
                     </div>
                   )}
                 </motion.section>
               )}
 
-              {step === 4 && recommendations.length === 0 && (
+              {step === 4 && recommendations.length === 0 && !loading && (
                 <motion.div
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="flex flex-col items-center justify-center text-center py-20 px-6 rounded-[32px] border border-dashed border-white/10 bg-white/[0.01]"
                 >
                   <Film size={48} className="text-white/20 mb-4" />
-                  <h3 className="font-serif text-2xl mb-2 text-white/90">Vibe Recalibration Needed</h3>
+                  <h3 className="font-serif text-2xl mb-2 text-white/90">Calibration Drift</h3>
                   <p className="text-sm text-white/50 max-w-md leading-relaxed">
-                    We couldn&apos;t find any films matching this exact combination. Try adjusting your intensity sliders, selecting new mood colors, or trying a different emotional direction!
+                    We couldn&apos;t find any films matching this precise emotional signature. Try expanding your spectrum, adjusting narrative sliders, or pivoting your vibe trajectory.
                   </p>
                   <button
                     onClick={() => setStep(1)}
                     className="mt-6 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-5 py-2.5 text-xs font-semibold text-black shadow-[0_0_24px_rgb(var(--accent-rgb)/0.2)] hover:scale-[1.02]"
                   >
-                    Adjust Calibration
+                    Re-Calibrate
                   </button>
                 </motion.div>
               )}
@@ -756,13 +1035,6 @@ export default function Home() {
             onExploreMore={(movie) => exploreMoreLikeThis(movie)}
             isSaved={isMovieSaved(activeMovie.id)}
             onToggleSave={() => toggleSaveMovie(activeMovie)}
-            moodTags={selectedMoodTags}
-            vibeLabels={{
-              pace: getVibeLabel("pace", sliders.pace),
-              tone: getVibeLabel("tone", sliders.tone),
-              complexity: getVibeLabel("complexity", sliders.complexity),
-              intensity: getVibeLabel("intensity", sliders.intensity),
-            }}
           />
         )}
       </AnimatePresence>
@@ -799,11 +1071,11 @@ export default function Home() {
               animate={{ scale: 1, y: 0, filter: "blur(0px)" }}
               exit={{ scale: 0.94, y: 24, filter: "blur(10px)" }}
               transition={{ type: "spring", stiffness: 130, damping: 18 }}
-              className="w-full max-w-5xl rounded-[30px] border border-white/10 bg-white/[0.04] p-3 shadow-[0_0_90px_rgb(var(--accent-rgb)/0.28)] backdrop-blur-xl"
+              className="w-full max-w-5xl rounded-[24px] border border-white/10 bg-white/[0.04] p-2 shadow-[0_0_90px_rgb(var(--accent-rgb)/0.28)] backdrop-blur-xl sm:rounded-[30px] sm:p-3"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mb-3 flex items-center justify-between gap-3 px-2 pt-1">
-                <p className="truncate font-serif text-2xl">{activeTrailer.title} Trailer</p>
+                <p className="truncate font-serif text-lg sm:text-2xl">{activeTrailer.title} Trailer</p>
                 <button onClick={() => setActiveTrailer(null)} className="rounded-full p-2 text-white/70 transition hover:bg-white/10 hover:text-white">
                   <X size={18} />
                 </button>
@@ -831,15 +1103,15 @@ export default function Home() {
 
 function BrandAnimation() {
   return (
-    <div className="relative h-12 min-w-0 flex-1 overflow-hidden">
+    <div className="relative h-10 min-w-0 flex-1 overflow-hidden sm:h-12">
       <motion.div
         initial={{ opacity: 1 }}
         animate={{ opacity: 0 }}
         transition={{ delay: 2.2, duration: 0.3 }}
-        className="absolute left-0 top-1 flex items-baseline font-serif text-3xl tracking-tight sm:text-4xl"
+        className="absolute left-0 top-1 flex items-baseline font-serif text-2xl tracking-tight sm:text-4xl"
       >
-        <span>netfix</span>
-        <motion.span animate={{ x: 42 }} transition={{ delay: 0.8, duration: 0.9, ease: [0.22, 1, 0.36, 1] }} className="ml-2 text-white/72">
+        <span>netflix</span>
+        <motion.span animate={{ x: 48 }} transition={{ delay: 0.8, duration: 0.9, ease: [0.22, 1, 0.36, 1] }} className="ml-1.5 text-white/72 sm:ml-2">
           syndrome
         </motion.span>
       </motion.div>
@@ -847,7 +1119,7 @@ function BrandAnimation() {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 2.35, duration: 0.55 }}
-        className="absolute left-0 top-1 font-serif text-3xl tracking-tight sm:text-4xl"
+        className="absolute left-0 top-1 font-serif text-2xl tracking-tight sm:text-4xl"
       >
         <span>Netflix </span>
         <span className="text-[color:var(--accent)]">De-Syndrome</span>
@@ -881,27 +1153,27 @@ function OpeningPanel({
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: -30, filter: "blur(10px)" }}
       transition={{ type: "spring", stiffness: 120, damping: 20 }}
-      className="max-w-4xl mx-auto text-center"
+      className="mx-auto max-w-4xl text-center"
     >
-      <p className="mb-4 text-sm uppercase tracking-[0.3em] text-[color:var(--accent)] font-semibold">What does tonight feel like?</p>
-      <h1 className="max-w-4xl font-serif text-6xl leading-[0.9] text-balance sm:text-8xl text-zinc-50 tracking-[-0.02em] font-semibold">Choose by mood, not by scrolling.</h1>
-      <p className="mt-6 max-w-xl text-base leading-relaxed text-zinc-400 font-light mx-auto">
-        Calibrate your vibe in under a minute. Get exactly five emotionally relevant movies, each with a reason and a trailer.
+      <p className="mb-3 text-xs uppercase tracking-[0.24em] text-[color:var(--accent)] font-semibold sm:mb-4 sm:text-sm sm:tracking-[0.3em]">What does tonight feel like?</p>
+      <h1 className="mx-auto max-w-[22rem] font-serif text-5xl leading-[0.92] text-balance text-zinc-50 tracking-[-0.02em] font-semibold sm:max-w-4xl sm:text-8xl">Choose by mood, not by scrolling.</h1>
+      <p className="mx-auto mt-5 max-w-sm text-sm leading-relaxed text-zinc-400 font-light sm:mt-6 sm:max-w-xl sm:text-base">
+        Calibrate your mood in under a minute. Get exactly five emotionally relevant movies, each with a reason and a trailer.
       </p>
 
       {lastVibe ? (
-        <div className="mt-12 flex flex-col items-center justify-center gap-6">
+        <div className="mt-8 flex flex-col items-center justify-center gap-5 sm:mt-12 sm:gap-6">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="glass-card rounded-2xl border border-white/[0.04] p-5 w-full max-w-md text-left shadow-xl"
+            className="glass-card w-full max-w-md rounded-2xl border border-white/[0.04] p-4 text-left shadow-xl sm:p-5"
           >
             <div className="flex items-center justify-between mb-3">
-              <span className="text-xs uppercase tracking-widest text-[color:var(--accent)] font-semibold">Welcome Back</span>
-              <span className="text-[10px] text-zinc-500 italic">Saved Vibe Found</span>
+              <span className="text-xs uppercase tracking-widest text-[color:var(--accent)] font-semibold">Vibe Signature</span>
+              <span className="text-[10px] text-zinc-500 italic">Saved Preset Found</span>
             </div>
             <p className="text-sm text-zinc-300 mb-2 leading-relaxed">
-              Your last setup had <span className="font-semibold text-white">{colorNames}</span> colors, matching in <span className="font-semibold text-white">{lastVibe.direction === "reflect" ? "reflective" : "shifting"}</span> mode.
+              Your previous profile combined <span className="font-semibold text-white">{colorNames}</span> to <span className="font-semibold text-white">{lastVibe.direction === "reflect" ? "reflect" : "shift"}</span> your emotional frequency.
             </p>
             <div className="flex flex-wrap gap-2.5 mt-2">
               <div className="text-[10px] bg-white/[0.05] rounded-full px-2 py-0.5 border border-white/[0.04] text-zinc-400">Pace: {lastVibe.sliders.pace}</div>
@@ -911,29 +1183,29 @@ function OpeningPanel({
             </div>
           </motion.div>
 
-          <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
+          <div className="flex w-full flex-col justify-center gap-3 sm:flex-row sm:gap-4">
             <button
               onClick={onUseLastVibe}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-4 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98]"
+              className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-3.5 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98] sm:py-4"
             >
               <Sparkles size={18} />
-              Use Last Vibe
+              Restore Vibe Profile
             </button>
             <button
               onClick={onStart}
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-8 py-4 font-semibold text-zinc-300 hover:bg-white/[0.08] hover:text-white transition"
+              className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-8 py-3.5 font-semibold text-zinc-300 hover:bg-white/[0.08] hover:text-white transition sm:py-4"
             >
-              Recalibrate Vibe
+              Calibrate New Vibe
             </button>
           </div>
         </div>
       ) : (
         <button
           onClick={onStart}
-          className="mt-12 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-4 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98]"
+          className="mt-8 inline-flex min-h-12 items-center gap-2 rounded-full bg-[color:var(--accent)] px-8 py-3.5 font-semibold text-black shadow-[0_4px_24px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] active:scale-[0.98] sm:mt-12 sm:py-4"
         >
           <Sparkles size={18} />
-          Begin
+          Begin Calibration
         </button>
       )}
     </motion.div>
@@ -959,13 +1231,13 @@ function StepCard({
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: -30, filter: "blur(10px)" }}
       transition={{ type: "spring", stiffness: 120, damping: 20 }}
-      className="relative glass-card overflow-hidden rounded-[32px] p-6 sm:p-10 max-w-5xl mx-auto w-full"
+      className="relative glass-card mx-auto w-full max-w-5xl overflow-hidden rounded-[24px] p-4 sm:rounded-[32px] sm:p-10"
     >
       {/* Top-inner border highlight to catch physical light */}
-      <div className="absolute inset-0 rounded-[32px] border border-white/[0.05] border-t-white/[0.15] pointer-events-none z-20" />
+      <div className="absolute inset-0 rounded-[24px] border border-white/[0.05] border-t-white/[0.15] pointer-events-none z-20 sm:rounded-[32px]" />
       
-      <div className="relative z-10 mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div className="flex items-start gap-4">
+      <div className="relative z-10 mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex items-start gap-3 sm:gap-4">
           {onBack && (
             <button
               onClick={onBack}
@@ -976,8 +1248,8 @@ function StepCard({
             </button>
           )}
           <div>
-            <p className="mb-2 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-semibold">{eyebrow}</p>
-            <h2 className="max-w-4xl font-serif text-4xl leading-tight text-balance sm:text-5xl text-zinc-50 tracking-[-0.02em] font-semibold">{title}</h2>
+            <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-[color:var(--accent)] font-semibold sm:text-xs sm:tracking-[0.26em]">{eyebrow}</p>
+            <h2 className="max-w-4xl font-serif text-[2rem] leading-tight text-balance text-zinc-50 tracking-[-0.02em] font-semibold sm:text-5xl">{title}</h2>
           </div>
         </div>
         {action}
@@ -1005,18 +1277,18 @@ function Slider({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="relative block glass-card p-6 transition-all duration-300 hover:border-white/[0.12]">
+    <label className="relative block glass-card p-4 transition-all duration-300 hover:border-white/[0.12] sm:p-6">
       
       <span className="relative z-10 mb-4 flex items-center justify-between gap-4">
         <span className="capitalize text-zinc-200 font-medium tracking-wide">{label}</span>
         <span className="font-mono text-sm text-[color:var(--accent)] font-semibold">{value}</span>
       </span>
       <input type="range" min={0} max={100} value={value} onChange={(event) => onChange(Number(event.target.value))} className="mood-slider relative z-10 w-full" />
-      <span className="relative z-10 mt-3 flex justify-between gap-3 text-xs text-zinc-500 font-light">
+      <span className="relative z-10 mt-3 flex justify-between gap-3 text-[11px] text-zinc-500 font-light sm:text-xs">
         <span>{left}</span>
         <span className="text-right">{right}</span>
       </span>
-      <span className="relative z-10 block mt-2.5 text-center text-[11px] text-zinc-500 tracking-wider font-light italic">
+      <span className="relative z-10 block mt-2.5 text-center text-[10px] text-zinc-500 tracking-wider font-light italic sm:text-[11px]">
         {helper}
       </span>
     </label>
@@ -1032,7 +1304,7 @@ function ProgressIndicator({ step, setStep }: { step: number; setStep: (step: nu
   ];
 
   return (
-    <div className="mx-auto mb-10 w-full max-w-xl px-4">
+    <div className="mx-auto mb-7 w-full max-w-xl px-1 sm:mb-10 sm:px-4">
       <div className="relative flex items-center justify-between">
         {/* Progress bar line */}
         <div className="absolute left-0 top-1/2 h-[2px] w-full -translate-y-1/2 bg-white/[0.06]" />
@@ -1055,7 +1327,7 @@ function ProgressIndicator({ step, setStep }: { step: number; setStep: (step: nu
               key={s.number}
               disabled={!isClickable}
               onClick={() => setStep(s.number)}
-              className={`relative z-10 flex flex-col items-center gap-2 group transition duration-300 ${
+                 className={`relative z-10 flex flex-col items-center gap-1.5 group transition duration-300 sm:gap-2 ${
                 isClickable ? "cursor-pointer animate-pulse" : "cursor-default opacity-80"
               }`}
             >
@@ -1073,14 +1345,14 @@ function ProgressIndicator({ step, setStep }: { step: number; setStep: (step: nu
                     ? "var(--accent)"
                     : "rgba(255,255,255,0.12)",
                 }}
-                className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-all ${
+                className={`flex h-7 w-7 items-center justify-center rounded-full border-2 text-[11px] font-bold transition-all sm:h-8 sm:w-8 sm:text-xs ${
                   isActive ? "text-black shadow-[0_0_18px_rgb(var(--accent-rgb)/0.3)]" : isCompleted ? "text-black" : "text-zinc-500"
                 }`}
               >
                 {isCompleted ? <Check size={14} strokeWidth={3} /> : s.number}
               </motion.div>
               <span
-                className={`text-[10px] sm:text-[11px] font-semibold tracking-wider uppercase transition duration-300 ${
+                 className={`text-[9px] sm:text-[11px] font-semibold tracking-wide sm:tracking-wider uppercase transition duration-300 ${
                   isActive
                     ? "text-[color:var(--accent)]"
                     : isCompleted
@@ -1111,102 +1383,107 @@ function MovieCard({
   isSaved: boolean;
   onToggleSave: () => void;
 }) {
+  const [posterFailed, setPosterFailed] = useState(false);
+
   return (
     <motion.article
       custom={index}
       variants={cardVariants}
       initial="hidden"
       animate="visible"
-      whileHover={{ y: -8, scale: 1.025 }}
+      whileHover={{ y: -8, scale: 1.02 }}
       transition={{ type: "spring", stiffness: 120, damping: 20 }}
       onClick={onSelect}
-      className="group relative cursor-pointer overflow-hidden aspect-[2/3] flex flex-col justify-end glass-card hover:border-white/15 hover:scale-[1.02] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(var(--accent-rgb),0.12)]"
+      className="group relative flex h-full cursor-pointer flex-row overflow-hidden rounded-2xl border border-white/[0.06] glass-card transition-all duration-300 hover:border-white/15 hover:shadow-[0_20px_50px_rgba(var(--accent-rgb),0.12)] sm:flex-col"
     >
-      {/* Save/Bookmark Button */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggleSave(); }}
-        className={`absolute top-4 left-4 z-20 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-md transition-all duration-300 ${
-          isSaved
-            ? "bg-[color:var(--accent)]/90 text-black border border-[color:var(--accent)] shadow-[0_0_16px_rgb(var(--accent-rgb)/0.3)]"
-            : "bg-black/50 text-white/60 border border-white/10 opacity-0 group-hover:opacity-100 hover:bg-black/70 hover:text-white"
-        }`}
-        title={isSaved ? "Remove from saved" : "Save this pick"}
-      >
-        <Bookmark size={14} fill={isSaved ? "currentColor" : "none"} />
-      </button>
+      {/* Poster Image Container */}
+      <div className="relative w-[38%] shrink-0 overflow-hidden rounded-l-2xl bg-zinc-950 sm:aspect-[2/3] sm:w-full sm:rounded-l-none sm:rounded-t-2xl">
+        {/* Bookmark Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSave();
+          }}
+          className={`absolute left-2.5 top-2.5 z-20 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-md transition-all duration-300 sm:left-3.5 sm:top-3.5 ${
+            isSaved
+              ? "bg-[color:var(--accent)] text-black border border-[color:var(--accent)] shadow-[0_0_16px_rgb(var(--accent-rgb)/0.3)] animate-pulse"
+              : "bg-black/50 text-white/70 border border-white/10 opacity-100 sm:opacity-0 group-hover:opacity-100 hover:bg-black/70 hover:text-white"
+          }`}
+          title={isSaved ? "Remove from saved" : "Save this pick"}
+        >
+          <Bookmark size={13} fill={isSaved ? "currentColor" : "none"} />
+        </button>
 
-      {movie.poster ? (
-        <img
-          alt={movie.title}
-          src={movie.poster}
-          className="absolute inset-0 h-full w-full object-cover transition duration-700 group-hover:scale-105"
-        />
-      ) : (
-        <div className="absolute inset-0 bg-white/5 flex items-center justify-center text-zinc-400">
-          No Poster
-        </div>
-      )}
-      
-      {movie.rating > 0 && (
-        <div className="absolute top-4 right-4 z-20 flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-bold text-zinc-50 backdrop-blur-md border border-white/10 shadow-lg">
-          <Star size={12} fill="#eab308" stroke="#eab308" />
-          <span>{movie.rating.toFixed(1)}</span>
-        </div>
-      )}
-      
-      <div className="absolute inset-0 bg-gradient-to-t from-[#050507] via-[#050507]/40 to-transparent opacity-90 transition duration-500 group-hover:opacity-100" />
-      
-      <div
-        className="absolute inset-0 opacity-0 transition duration-500 group-hover:opacity-100"
-        style={{ boxShadow: "inset 0 0 80px rgb(var(--accent-rgb) / 0.2)" }}
-      />
-
-      <div className="relative z-10 p-5 flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            {movie.wildcard && (
-              <span className="rounded-full bg-[color:var(--accent)] px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black">
-                Wildcard
-              </span>
-            )}
-            {movie.providers && movie.providers.length > 0 && (
-              <div className="flex gap-1">
-                {movie.providers.map((provider) => (
-                  <img
-                    key={provider.name}
-                    src={provider.logo}
-                    alt={provider.name}
-                    title={provider.name}
-                    className="w-6 h-6 rounded-full object-cover border border-white/20 shadow-[0_2px_8px_rgba(0,0,0,0.4)]"
-                  />
-                ))}
-              </div>
-            )}
+        {movie.poster && !posterFailed ? (
+          <img
+            alt={movie.title}
+            src={movie.poster}
+            className="absolute inset-0 h-full w-full object-cover transition duration-700 group-hover:scale-105"
+            loading="lazy"
+            onError={() => setPosterFailed(true)}
+          />
+        ) : (
+          <div className="absolute inset-0 bg-white/5 flex items-center justify-center text-zinc-500 text-xs">
+            No Poster
           </div>
-          <span className="rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-medium text-[color:var(--accent)] border border-white/5">
-            {movie.matchScore}% match
-          </span>
+        )}
+
+        {/* Glow inner overlay */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent pointer-events-none" />
+
+        {/* Rating or Match score badge overlay */}
+        <div className="absolute right-2.5 top-2.5 z-20 flex items-center gap-1 rounded-full border border-white/10 bg-black/60 px-2 py-1 text-[9px] font-bold text-zinc-100 shadow-lg backdrop-blur-md sm:right-3.5 sm:top-3.5 sm:px-2.5 sm:text-[10px]">
+          <span className="text-[color:var(--accent)] font-semibold">{movie.matchScore}% Match</span>
         </div>
 
-        <div className="text-left">
-          <h3 className="font-serif text-xl sm:text-2xl leading-tight text-zinc-50 group-hover:text-[color:var(--accent)] transition-colors duration-300 tracking-[-0.01em] font-semibold">
+        {movie.wildcard && (
+          <span className="absolute bottom-3.5 left-3.5 z-20 rounded-full bg-purple-500/90 backdrop-blur-md px-2.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white border border-purple-400/20">
+            Wildcard
+          </span>
+        )}
+      </div>
+
+      {/* Curation Info Container */}
+      <div className="flex min-w-0 flex-grow flex-col justify-between border-l border-white/[0.04] bg-zinc-950/30 p-3 text-left sm:border-l-0 sm:border-t sm:p-4">
+        <div>
+          {/* Year & Runtime */}
+          <p className="text-[10px] text-zinc-500 font-semibold tracking-wide">
+            {movie.year} {movie.runtime ? <>• {movie.runtime} min</> : ""}
+            {movie.rating > 0 ? <> • ★ {movie.rating.toFixed(1)}</> : ""}
+          </p>
+
+          {/* Title */}
+          <h3 className="mt-1 line-clamp-2 font-serif text-lg leading-snug tracking-tight text-zinc-100 transition-colors duration-200 group-hover:text-[color:var(--accent)] sm:line-clamp-1">
             {movie.title}
           </h3>
-          <p className="mt-1 text-xs text-zinc-400 font-normal">
-            {movie.year} {movie.runtime ? <>{" \u2022 "}{movie.runtime} min</> : ""}
-          </p>
-          
-          <div className="mt-3 flex flex-wrap gap-1">
-            {movie.genres.slice(0, 4).map((tag) => (
-              <span key={tag} className="rounded-full bg-white/[0.03] px-2 py-0.5 text-[10px] text-zinc-300 border border-white/[0.04]">
-                {tag}
-              </span>
-            ))}
-          </div>
 
-          <p className="mt-3 text-xs leading-relaxed text-zinc-400 line-clamp-2 transition-all duration-300 group-hover:text-zinc-300">
+          {/* Curation match chips */}
+          {movie.matchChips && movie.matchChips.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {movie.matchChips.slice(0, 2).map((chip) => (
+                <span
+                  key={chip}
+                  className="rounded-full bg-[color:var(--accent)]/5 border border-[color:var(--accent)]/15 px-2 py-0.5 text-[9px] font-medium text-[color:var(--accent)] backdrop-blur-md"
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Curation reason text */}
+          <p className="mt-2 text-[11px] leading-relaxed text-zinc-400 line-clamp-2 transition-colors duration-200 group-hover:text-zinc-300 sm:mt-2.5 sm:line-clamp-3">
             {movie.reason}
           </p>
+        </div>
+
+        {/* Action prompt row */}
+        <div className="mt-3 flex items-center justify-between border-t border-white/[0.04] pt-2.5 text-[10px] font-semibold text-zinc-500 transition-colors duration-200 group-hover:text-[color:var(--accent)] sm:mt-4">
+          <span className="flex items-center gap-1">
+            <Play size={10} fill="currentColor" className="opacity-60 translate-y-[-0.5px]" />
+            <span>View Trailer & Details</span>
+          </span>
+          <ChevronRight size={12} className="transform group-hover:translate-x-0.5 transition-transform duration-200" />
         </div>
       </div>
     </motion.article>
@@ -1220,8 +1497,6 @@ function MovieDetailModal({
   onExploreMore,
   isSaved,
   onToggleSave,
-  moodTags,
-  vibeLabels,
 }: {
   movie: Recommendation;
   onClose: () => void;
@@ -1229,15 +1504,15 @@ function MovieDetailModal({
   onExploreMore: (movie: Recommendation) => void;
   isSaved: boolean;
   onToggleSave: () => void;
-  moodTags: string[];
-  vibeLabels: { pace: string; tone: string; complexity: string; intensity: string };
 }) {
+  const [posterFailed, setPosterFailed] = useState(false);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 sm:p-6 backdrop-blur-3xl"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 p-0 backdrop-blur-3xl sm:items-center sm:p-6"
       onClick={onClose}
     >
       <motion.div
@@ -1245,7 +1520,7 @@ function MovieDetailModal({
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 60, opacity: 0 }}
         transition={{ type: "spring", stiffness: 120, damping: 20 }}
-        className="relative w-full max-w-5xl overflow-hidden rounded-[32px] glass-modal"
+        className="relative w-full max-w-5xl overflow-hidden rounded-t-[28px] glass-modal sm:rounded-[32px]"
         onClick={(e) => e.stopPropagation()}
       >
 
@@ -1259,57 +1534,58 @@ function MovieDetailModal({
 
         <button
           onClick={onClose}
-          className="absolute right-6 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.08] bg-[#050507]/40 text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-[#050507]/80 hover:text-zinc-100"
+          className="absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.08] bg-[#050507]/60 text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-[#050507]/80 hover:text-zinc-100 sm:right-6 sm:top-6"
         >
           <X size={20} />
         </button>
 
-        <div className="relative z-10 grid gap-8 p-6 sm:p-8 grid-cols-1 md:grid-cols-2 overflow-y-auto max-h-[85vh]">
+        <div className="relative z-10 grid max-h-[92svh] grid-cols-1 gap-5 overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16 sm:max-h-[85vh] sm:gap-8 sm:p-8 md:grid-cols-2">
           <div className="flex flex-col items-center justify-start gap-4">
-            {movie.poster ? (
+            {movie.poster && !posterFailed ? (
               <img
                 src={movie.poster}
                 alt={movie.title}
-                className="w-full rounded-[24px] border border-white/10 object-cover shadow-2xl shadow-black max-w-[320px] md:max-w-full"
+                className="w-full max-w-[180px] rounded-[18px] border border-white/10 object-cover shadow-2xl shadow-black sm:max-w-[320px] sm:rounded-[24px] md:max-w-full"
+                onError={() => setPosterFailed(true)}
               />
             ) : (
-              <div className="aspect-[2/3] w-full rounded-[24px] bg-white/5 flex items-center justify-center text-zinc-400 max-w-[320px] md:max-w-full">
+              <div className="aspect-[2/3] w-full max-w-[180px] rounded-[18px] bg-white/5 flex items-center justify-center text-zinc-400 sm:max-w-[320px] sm:rounded-[24px] md:max-w-full">
                 No Poster Available
               </div>
             )}
             
-            <div className="flex flex-col gap-3 w-full max-w-[320px] md:max-w-full">
+            <div className="grid w-full max-w-md grid-cols-1 gap-3 sm:max-w-[320px] md:max-w-full">
               {movie.trailerKey && (
                 <button
                   onClick={() => onWatchTrailer(movie)}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[color:var(--accent)] py-3.5 text-sm font-semibold text-black shadow-[0_0_30px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] hover:shadow-[0_0_40px_rgb(var(--accent-rgb)/0.4)]"
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[color:var(--accent)] py-3.5 text-sm font-semibold text-black shadow-[0_0_30px_rgb(var(--accent-rgb)/0.25)] transition hover:scale-[1.02] hover:shadow-[0_0_40px_rgb(var(--accent-rgb)/0.4)]"
                 >
                   <Play size={16} fill="black" />
-                  Watch Trailer
+                  Play Trailer
                 </button>
               )}
 
               <button
                 onClick={() => onExploreMore(movie)}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-[color:var(--accent)]/30 bg-[color:var(--accent)]/10 py-3.5 text-sm font-semibold text-[color:var(--accent)] backdrop-blur-xl transition hover:bg-[color:var(--accent)]/20 hover:scale-[1.02]"
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full border border-[color:var(--accent)]/30 bg-[color:var(--accent)]/10 py-3.5 text-sm font-semibold text-[color:var(--accent)] backdrop-blur-xl transition hover:bg-[color:var(--accent)]/20 hover:scale-[1.02]"
               >
                 <Compass size={16} className="text-[color:var(--accent)]" />
-                Explore more like this
+                Explore Similar Vibe
               </button>
 
               <button
                 onClick={onToggleSave}
-                className={`inline-flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-sm font-semibold transition hover:scale-[1.02] ${
+                className={`inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full py-3.5 text-sm font-semibold transition hover:scale-[1.02] ${
                   isSaved
                     ? "border border-[color:var(--accent)] bg-[color:var(--accent)]/20 text-[color:var(--accent)]"
                     : "border border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                 }`}
               >
                 <Bookmark size={16} fill={isSaved ? "currentColor" : "none"} />
-                {isSaved ? "Saved to picks" : "Save this pick"}
+                {isSaved ? "Bookmarked" : "Bookmark Pick"}
               </button>
 
-              <div className="mt-4 rounded-[20px] border border-white/[0.04] bg-white/[0.02] p-4 text-left shadow-lg backdrop-blur-xl">
+              <div className="relative mt-1 rounded-[20px] border border-white/[0.04] bg-white/[0.02] p-4 text-left shadow-lg backdrop-blur-xl sm:mt-4">
                 {/* Top-inner border highlight overlay */}
                 <div className="absolute inset-0 rounded-[20px] border border-white/[0.03] border-t-white/[0.12] pointer-events-none" />
 
@@ -1322,6 +1598,9 @@ function MovieDetailModal({
                           src={provider.logo}
                           alt={provider.name}
                           className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_2px_8px_rgba(0,0,0,0.3)]"
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
                         />
                         <span className="text-sm font-medium text-zinc-300">{provider.name}</span>
                       </div>
@@ -1334,10 +1613,10 @@ function MovieDetailModal({
             </div>
           </div>
 
-          <div className="flex flex-col gap-6 text-left">
+          <div className="flex flex-col gap-5 text-left sm:gap-6">
             <div>
-              <h2 className="font-serif text-4xl leading-tight text-zinc-50 sm:text-5xl tracking-[-0.01em] font-semibold">{movie.title}</h2>
-              <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-zinc-400">
+              <h2 className="font-serif text-3xl leading-tight text-zinc-50 tracking-[-0.01em] font-semibold sm:text-5xl">{movie.title}</h2>
+              <div className="mt-3 flex flex-wrap items-center gap-2.5 text-xs text-zinc-400 sm:gap-3 sm:text-sm">
                 <span className="font-semibold text-[color:var(--accent)]">{movie.year}</span>
                 {movie.runtime && (
                   <>
@@ -1378,7 +1657,7 @@ function MovieDetailModal({
 
             <div>
               <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-2 font-medium">Synopsis</h3>
-              <p className="text-base leading-relaxed text-zinc-300 max-w-3xl font-light">{movie.overview || movie.reason || "No synopsis available."}</p>
+              <p className="max-w-3xl text-sm leading-relaxed text-zinc-300 font-light sm:text-base">{movie.overview || movie.reason || "No synopsis available."}</p>
             </div>
 
             <div className="grid gap-4 border-t border-white/10 pt-4 sm:grid-cols-2">
@@ -1426,23 +1705,14 @@ function MovieDetailModal({
             <div className="rounded-2xl bg-white/[0.01] border border-white/[0.04] p-5">
               <h4 className="text-xs uppercase tracking-widest text-zinc-500 mb-3 font-semibold">Why This Matched</h4>
               <div className="flex flex-wrap gap-2 mb-4">
-                {moodTags.slice(0, 2).length > 0 && (
-                  <span className="rounded-full border border-[color:var(--accent)]/25 bg-[color:var(--accent)]/8 px-3 py-1 text-[11px] font-medium text-[color:var(--accent)]">
-                    Mood: {moodTags.slice(0, 2).join(" + ")}
+                {movie.matchChips?.map((chip) => (
+                  <span
+                    key={chip}
+                    className="rounded-full border border-[color:var(--accent)]/20 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-medium text-[color:var(--accent)]"
+                  >
+                    {chip}
                   </span>
-                )}
-                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                  Pace: {vibeLabels.pace}
-                </span>
-                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                  Tone: {vibeLabels.tone}
-                </span>
-                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                  Complexity: {vibeLabels.complexity}
-                </span>
-                <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-zinc-400">
-                  Intensity: {vibeLabels.intensity}
-                </span>
+                ))}
                 {(movie.rating ?? 0) > 0 && (
                   <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-3 py-1 text-[11px] font-medium text-yellow-400/90 inline-flex items-center gap-1">
                     <Star size={10} fill="currentColor" stroke="currentColor" />
@@ -1450,7 +1720,7 @@ function MovieDetailModal({
                   </span>
                 )}
               </div>
-              <p className="text-xs leading-relaxed text-zinc-400">{movie.reason}</p>
+              <p className="text-xs leading-relaxed text-zinc-400 font-light leading-relaxed">{movie.reason}</p>
             </div>
           </div>
         </div>
@@ -1477,7 +1747,7 @@ function SavedPicksPanel({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 sm:p-6 backdrop-blur-3xl"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 p-0 backdrop-blur-3xl sm:items-center sm:p-6"
       onClick={onClose}
     >
       <motion.div
@@ -1485,99 +1755,123 @@ function SavedPicksPanel({
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 60, opacity: 0 }}
         transition={{ type: "spring", stiffness: 120, damping: 20 }}
-        className="relative w-full max-w-2xl overflow-hidden rounded-[32px] glass-modal"
+        className="relative w-full max-w-2xl overflow-hidden rounded-t-[28px] border border-white/[0.08] glass-modal sm:rounded-[32px]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#050507]/90 to-[#050507] pointer-events-none" />
 
         <button
           onClick={onClose}
-          className="absolute right-6 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.08] bg-[#050507]/40 text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-[#050507]/80 hover:text-zinc-100"
+          className="absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.08] bg-[#050507]/60 text-zinc-400 backdrop-blur-md transition hover:border-white/[0.15] hover:bg-[#050507]/80 hover:text-zinc-100 sm:right-6 sm:top-6"
         >
           <X size={20} />
         </button>
 
-        <div className="relative z-10 p-6 sm:p-8 overflow-y-auto max-h-[85vh]">
-          <div className="mb-6">
-            <p className="mb-2 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-semibold">Your Picks</p>
-            <h2 className="font-serif text-3xl sm:text-4xl text-zinc-50 tracking-[-0.02em] font-semibold">Saved Movies</h2>
-            <p className="mt-2 text-sm text-zinc-400">
+        <div className="relative z-10 max-h-[92svh] overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16 sm:max-h-[85vh] sm:p-8">
+          <div className="mb-6 text-left border-b border-white/[0.05] pb-4">
+            <p className="mb-1 text-xs uppercase tracking-[0.26em] text-[color:var(--accent)] font-bold">Your Watchlist</p>
+            <h2 className="font-serif text-3xl sm:text-4xl text-zinc-50 tracking-[-0.02em] font-semibold">Bookmarked Cinema</h2>
+            <p className="mt-2 text-xs sm:text-sm text-zinc-400">
               {savedMovies.length === 0
-                ? "No movies saved yet. Bookmark movies you love to find them here."
-                : `${savedMovies.length} movie${savedMovies.length === 1 ? "" : "s"} saved`}
+                ? "Your watchlist is currently empty. Bookmark films to assemble your collection."
+                : `A collection of ${savedMovies.length} hand-calibrated cinematic experience${savedMovies.length === 1 ? "" : "s"}.`}
             </p>
           </div>
 
           {savedMovies.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-16 rounded-[24px] border border-dashed border-white/10 bg-white/[0.01]">
-              <Bookmark size={40} className="text-white/15 mb-4" />
-              <p className="text-sm text-zinc-500 max-w-xs">
-                Tap the bookmark icon on any movie card to save it for later.
+            <div className="flex flex-col items-center justify-center text-center py-20 px-4 rounded-[28px] border border-dashed border-white/10 bg-white/[0.01]">
+              <div className="h-14 w-14 flex items-center justify-center rounded-full bg-white/[0.02] border border-white/[0.05] text-zinc-500 mb-4 animate-pulse">
+                <Bookmark size={22} className="stroke-[1.5] text-zinc-400" />
+              </div>
+              <h3 className="font-serif text-xl text-zinc-200 mb-2 font-medium">Your Watchlist is Empty</h3>
+              <p className="text-xs text-zinc-500 max-w-sm leading-relaxed font-light">
+                Whenever a curated movie aligns with your vibe spectrum, click the bookmark icon on the card to save it here for later.
               </p>
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
-              {savedMovies.map((movie) => (
-                <motion.div
-                  key={movie.id}
-                  layout
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  onClick={() => onSelect(movie)}
-                  className="group/saved flex gap-4 rounded-[20px] border border-white/[0.06] bg-white/[0.02] p-3 transition hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer"
-                >
-                  {movie.poster ? (
-                    <img
-                      src={movie.poster}
-                      alt={movie.title}
-                      className="h-28 w-20 shrink-0 rounded-xl object-cover border border-white/10"
-                    />
-                  ) : (
-                    <div className="h-28 w-20 shrink-0 rounded-xl bg-white/5 flex items-center justify-center text-zinc-500 text-xs border border-white/10">
-                      No Poster
-                    </div>
-                  )}
+            <div className="flex flex-col gap-3.5 max-h-[50vh] overflow-y-auto pr-1 scrollbar-hide" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
+              <AnimatePresence initial={false}>
+                {savedMovies.map((movie) => (
+                  <motion.div
+                    key={movie.id}
+                    layout
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.2 } }}
+                    onClick={() => onSelect(movie)}
+                    className="group/saved relative flex cursor-pointer gap-3 overflow-hidden rounded-[18px] border border-white/[0.04] bg-white/[0.01] p-3 transition hover:border-white/[0.1] hover:bg-white/[0.03] sm:gap-4 sm:rounded-[20px]"
+                  >
+                    {/* Hover subtle glow overlay */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[color:var(--accent)]/[0.01] to-transparent opacity-0 group-hover/saved:opacity-100 transition-opacity duration-300 pointer-events-none" />
 
-                  <div className="flex-1 min-w-0 flex flex-col justify-between py-1">
-                    <div>
-                      <h3 className="font-serif text-lg font-semibold text-zinc-100 truncate group-hover/saved:text-[color:var(--accent)] transition-colors duration-300">{movie.title}</h3>
-                      <p className="text-xs text-zinc-400 mt-0.5 flex flex-wrap items-center gap-1.5">
-                        <span>{movie.year}</span>
-                        {movie.runtime ? <span>&bull; {movie.runtime} min</span> : null}
-                        <span>&bull;</span>
-                        <span className="text-[color:var(--accent)] font-medium">
-                          {formatSavedAt(movie.savedAt)}
-                        </span>
-                      </p>
-                      <p className="text-xs text-zinc-500 mt-2 line-clamp-2 leading-relaxed">{movie.reason}</p>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      {movie.trailerKey && (
+                    {movie.poster ? (
+                      <img
+                        src={movie.poster}
+                        alt={movie.title}
+                        className="h-24 w-16 shrink-0 rounded-xl border border-white/10 object-cover shadow-[0_4px_12px_rgba(0,0,0,0.4)] transition-transform duration-300 group-hover/saved:scale-[1.02] sm:h-28 sm:w-20"
+                      />
+                    ) : (
+                      <div className="flex h-24 w-16 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-[10px] text-zinc-500 sm:h-28 sm:w-20">
+                        No Poster
+                      </div>
+                    )}
+
+                    <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5 text-left">
+                      <div>
+                        <div className="flex items-start justify-between gap-3">
+                          <h3 className="font-serif text-base sm:text-lg font-semibold text-zinc-200 truncate group-hover/saved:text-[color:var(--accent)] transition-colors duration-200">
+                            {movie.title}
+                          </h3>
+                          <span className="shrink-0 rounded-full bg-white/[0.04] px-2.5 py-0.5 text-[9px] font-semibold text-[color:var(--accent)] border border-white/[0.05] shadow-sm">
+                            {movie.matchScore}% Match
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 mt-1 flex flex-wrap items-center gap-1.5 font-medium tracking-wide">
+                          <span className="text-zinc-400">{movie.year}</span>
+                          {movie.runtime ? (
+                            <>
+                              <span>&bull;</span>
+                              <span>{movie.runtime} min</span>
+                            </>
+                          ) : null}
+                          <span>&bull;</span>
+                          <span className="text-[color:var(--accent)] opacity-80 font-normal">
+                            {formatSavedAt(movie.savedAt)}
+                          </span>
+                        </p>
+                        <p className="text-xs text-zinc-400 mt-2 line-clamp-2 leading-relaxed font-light">
+                          {movie.reason}
+                        </p>
+                      </div>
+
+                      <div className="mt-3.5 flex flex-wrap items-center gap-2">
+                        {movie.trailerKey && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onWatchTrailer(movie.trailerKey!, movie.title);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3.5 py-1.5 text-[10px] font-semibold text-zinc-300 transition hover:bg-white/[0.12] hover:text-white border border-white/[0.06] shadow-sm active:scale-[0.98] cursor-pointer"
+                          >
+                            <Play size={10} fill="currentColor" className="translate-y-[-0.5px]" />
+                            Watch Trailer
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            onWatchTrailer(movie.trailerKey!, movie.title);
+                            onRemove(movie.id);
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/[0.12] hover:text-white border border-white/[0.06]"
+                          className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.02] px-3.5 py-1.5 text-[10px] font-semibold text-zinc-500 transition hover:bg-red-950/30 hover:text-red-300 border border-white/[0.04] hover:border-red-500/10 active:scale-[0.98] cursor-pointer"
                         >
-                          <Play size={10} fill="currentColor" />
-                          Trailer
+                          <Trash2 size={10} />
+                          Remove Pick
                         </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemove(movie.id);
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-zinc-500 transition hover:bg-red-950/40 hover:text-red-300 border border-white/[0.04] hover:border-red-400/20"
-                      >
-                        <Trash2 size={10} />
-                        Remove
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             </div>
           )}
         </div>
@@ -1586,11 +1880,43 @@ function SavedPicksPanel({
   );
 }
 
+function SkeletonCard() {
+  return (
+    <div className="group relative flex flex-col glass-card border border-white/[0.04] bg-white/[0.01] overflow-hidden rounded-2xl h-full select-none pointer-events-none">
+      {/* Top aspect-2/3 block */}
+      <div className="relative w-full aspect-[2/3] overflow-hidden rounded-t-2xl bg-white/[0.02] skeleton-sheen animate-pulse" />
+      {/* Bottom text block */}
+      <div className="flex-grow p-4 bg-zinc-950/20 border-t border-white/[0.04] flex flex-col gap-3">
+        {/* Year & Rating block */}
+        <div className="h-3.5 w-20 bg-white/[0.03] rounded skeleton-sheen" />
+        {/* Title */}
+        <div className="h-5.5 w-3/4 bg-white/[0.05] rounded skeleton-sheen mt-1" />
+        {/* Chips */}
+        <div className="flex gap-1.5 mt-1">
+          <div className="h-4.5 w-14 bg-white/[0.03] rounded-full skeleton-sheen" />
+          <div className="h-4.5 w-16 bg-white/[0.03] rounded-full skeleton-sheen" />
+        </div>
+        {/* Reason text lines */}
+        <div className="flex flex-col gap-2 mt-1.5">
+          <div className="h-3.5 w-full bg-white/[0.02] rounded skeleton-sheen" />
+          <div className="h-3.5 w-11/12 bg-white/[0.02] rounded skeleton-sheen" />
+          <div className="h-3.5 w-4/5 bg-white/[0.02] rounded skeleton-sheen" />
+        </div>
+        {/* Action prompt row skeleton */}
+        <div className="mt-4 pt-2.5 border-t border-white/[0.03] flex items-center justify-between">
+          <div className="h-3.5 w-24 bg-white/[0.03] rounded skeleton-sheen" />
+          <div className="h-4 w-4 bg-white/[0.03] rounded-full skeleton-sheen" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SkeletonGrid() {
   return (
-    <div className="mt-7 grid gap-3 sm:grid-cols-3">
-      {[0, 1, 2].map((item) => (
-        <div key={item} className="skeleton-sheen h-40 rounded-[24px] border border-white/[0.08] bg-white/[0.035] backdrop-blur-xl" />
+    <div className="grid gap-6 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 w-full">
+      {[0, 1, 2, 3, 4].map((item) => (
+        <SkeletonCard key={item} />
       ))}
     </div>
   );

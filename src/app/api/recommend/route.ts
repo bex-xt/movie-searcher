@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getOfflineRecommendations } from "@/offlinePool";
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -119,6 +120,7 @@ type Recommendation = {
     name: string;
     logo: string;
   }[];
+  matchChips?: string[];
 };
 
 const genreNames: Record<number, string> = {
@@ -179,8 +181,25 @@ export async function POST(request: Request) {
     const recommendations = await buildRecommendations(input, excludeIds, seedMovieId);
     return NextResponse.json({ recommendations });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown recommendation error.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("TMDB/Backend recommendation failed. Falling back to offline pool:", error);
+    try {
+      const excludeIds = input.exclude_ids || input.excludeIds || [];
+      const recommendations = getOfflineRecommendations(
+        input.selectedColors || [],
+        input.direction || "reflect",
+        {
+          pace: input.sliders?.pace ?? 50,
+          tone: input.sliders?.tone ?? 50,
+          complexity: input.sliders?.complexity ?? 50,
+          intensity: input.sliders?.intensity ?? 50,
+        },
+        excludeIds
+      );
+      return NextResponse.json({ recommendations, isOffline: true });
+    } catch (fallbackError) {
+      const message = fallbackError instanceof Error ? fallbackError.message : "Unknown recommendation error.";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
 }
 
@@ -609,15 +628,20 @@ async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: bo
     logo: `https://image.tmdb.org/t/p/w92${p.logo_path}`,
   }));
 
+  const title = detail.title || movie.title;
+  const matchScore = scoreMovie(movie, input);
+  const matchChips = buildMatchChips(movie, input, wildcard, matchScore);
+  const reason = reasonFor(title, input, genres, wildcard);
+
   return {
     id: movie.id,
-    title: detail.title || movie.title,
+    title,
     year: (detail.release_date || movie.release_date || "----").slice(0, 4),
     runtime: detail.runtime || null,
     poster: detail.poster_path ? `${imageBase}${detail.poster_path}` : null,
     genres: buildVibeTags(genres, input),
-    matchScore: scoreMovie(movie, input),
-    reason: reasonFor(input, genres, wildcard),
+    matchScore,
+    reason,
     trailerKey: trailer?.key || null,
     wildcard,
     backdrop: detail.backdrop_path ? `https://image.tmdb.org/t/p/w1280${detail.backdrop_path}` : null,
@@ -628,6 +652,7 @@ async function toRecommendation(movie: TmdbMovie, input: MoodInput, wildcard: bo
     rating,
     votes,
     providers,
+    matchChips,
   };
 }
 
@@ -727,8 +752,55 @@ function scoreMovie(movie: TmdbMovie, input: MoodInput) {
   return Math.max(76, Math.min(97, Math.round(base + toneBoost + darkBoost + paceBoost + intensityBoost + complexityBoost)));
 }
 
-function reasonFor(input: MoodInput, genres: string[], wildcard: boolean) {
-  const tags = tagsFor(input);
+function buildMatchChips(
+  movie: unknown,
+  input: MoodInput,
+  wildcard: boolean,
+  matchScore: number
+): string[] {
+  const chips: string[] = [];
+
+  // 1. Mood Match (using colors)
+  const colors = input.selectedColors || [];
+  if (colors.length > 0) {
+    chips.push(`Mood: ${colors.map((c) => c.name).join(" & ")}`);
+  }
+
+  // 2. Trajectory / Direction
+  chips.push(input.direction === "shift" ? "Vibe Pivot" : "Vibe Echo");
+
+  // 3. Narrative sliders (Tone/Pacing/Complexity/Intensity)
+  const pace = input.sliders?.pace ?? 50;
+  if (pace < 35) chips.push("Slow-Burn");
+  else if (pace > 65) chips.push("High-Tempo");
+
+  const tone = input.sliders?.tone ?? 50;
+  if (tone < 35) chips.push("Visceral Tone");
+  else if (tone > 65) chips.push("Luminous Tone");
+
+  const complexity = input.sliders?.complexity ?? 50;
+  if (complexity < 35) chips.push("Direct Plot");
+  else if (complexity > 65) chips.push("Intricate Plot");
+
+  // 4. Wildcard
+  if (wildcard) {
+    chips.push("Wildcard Pick");
+  }
+
+  // 5. Match/Quality Score
+  chips.push(`${matchScore}% Match`);
+
+  return chips.slice(0, 5); // Keep exactly 3-5 chips
+}
+
+function reasonFor(
+  title: string,
+  input: MoodInput,
+  genres: string[],
+  wildcard: boolean
+): string {
+  const colors = input.selectedColors || [];
+  const colorNames = colors.map((c) => c.name).slice(0, 2).join(" and ") || "your color spectrum";
   const direction = input.direction ?? "reflect";
 
   let tone = input.sliders?.tone ?? 50;
@@ -736,7 +808,7 @@ function reasonFor(input: MoodInput, genres: string[], wildcard: boolean) {
   let complexity = input.sliders?.complexity ?? 50;
 
   if (direction === "shift") {
-    const colorIds = input.selectedColors?.map((c) => c.id) || [];
+    const colorIds = colors.map((c) => c.id);
     const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
     const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
     const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
@@ -753,41 +825,19 @@ function reasonFor(input: MoodInput, genres: string[], wildcard: boolean) {
     }
   }
 
-  const paceText = pace > 58 ? "faster pacing" : "a patient rhythm";
-  const toneText = tone > 58 ? "a lighter emotional landing" : "a darker emotional edge";
-  const complexityText = complexity > 58 ? "room to think" : "an easy path into the story";
+  const paceText = pace > 58 ? "dynamic tempo" : "slow burn pacing";
+  const toneText = tone > 58 ? "comforting luminosity" : "grave atmospheric shadows";
+  const complexityText = complexity > 58 ? "intricate narrative depth" : "direct, engaging storytelling";
 
   if (wildcard) {
-    return `This is your wildcard: a less obvious TMDB match for ${tags[0] || "your mood"}, chosen to interrupt the scroll without breaking the vibe.`;
+    return `Selected as a wildcard match for your ${colorNames} spectrum. Chosen specifically to disrupt standard scroll patterns by introducing ${title} as a fresh narrative route.`;
   }
 
   if (direction === "shift") {
-    const colorIds = input.selectedColors?.map((c) => c.id) || [];
-    const hasDark = colorIds.some((id) => ["charcoal", "red"].includes(id));
-    const hasLight = colorIds.some((id) => ["pale-yellow", "warm-amber", "rose"].includes(id));
-    const hasBlueGray = colorIds.some((id) => ["deep-blue", "gray", "teal", "muted-green", "violet"].includes(id));
-
-    if (hasDark) {
-      return `Chosen to shift from your mood toward a lighter emotional landing, softening the dark tone with comedy, romance, or adventure.`;
-    }
-    if (hasLight) {
-      return `Chosen to shift from your mood toward deeper dramatic complexity, adding thought-provoking depth to your warm outlook.`;
-    }
-    if (hasBlueGray) {
-      return `Chosen to shift from your mood toward hope, adventure, or warmth, lifting the quiet or reflective tone.`;
-    }
-    return `Recommended to gently shift your vibe, balancing a transition in pace with a fresh emotional outlook.`;
+    return `Highly tailored for your vibe trajectory. We mapped your ${colorNames} mood and steered the tone of ${title} toward ${toneText} to successfully pivot your emotional state.`;
   }
 
-  if (genres.some((genre) => ["Comedy", "Animation", "Family", "Adventure"].includes(genre))) {
-    return `Chosen to reflect your current mood with ${toneText}, ${paceText}, and enough warmth to make the choice feel low-friction.`;
-  }
-
-  if (genres.some((genre) => ["Mystery", "Thriller", "Science Fiction", "Sci-Fi"].includes(genre))) {
-    return `Recommended because your profile leans ${tags.slice(0, 2).join(" and ") || "atmospheric"}, with ${complexityText} and controlled tension.`;
-  }
-
-  return `This fits your ${tags.slice(0, 2).join(" and ") || "emotional"} mood, balancing ${paceText} with ${complexityText}.`;
+  return `Chosen to mirror your current state. Maps directly to your ${colorNames} selection, delivering a ${paceText} and ${toneText} with ${complexityText} to reflect your frequency.`;
 }
 
 function buildVibeTags(genres: string[], input: MoodInput) {
